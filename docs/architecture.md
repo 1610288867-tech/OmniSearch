@@ -4,7 +4,7 @@
 
 ## Context
 
-桌面端本地 AI 文件搜索软件 **OmniSearch**（需求：[request.txt](../request.txt)）。修复了 FTS5 contentless DELETE 语义、时间过滤 unknown 语义、重新索引旧数据生命周期、QueryParser MVP 边界、端口分配、时区规则等实现级问题。
+桌面端本地 AI 文件搜索软件 **OmniSearch**。修复了 FTS5 contentless DELETE 语义、时间过滤 unknown 语义、重新索引旧数据生命周期、QueryParser MVP 边界、端口分配、时区规则等实现级问题。
 
 定位：**本地 AI Hybrid Retrieval Engine**。三大核心亮点：① Hybrid Search（Metadata Filter + FTS5 + Vector → RRF）；② AI Worker 解耦（API 轻载 / AI 任务进程级隔离）；③ Windows Incremental Index（Watchdog 增量，USN Journal 为 P2）。
 

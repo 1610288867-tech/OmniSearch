@@ -23,7 +23,7 @@ dev-data/
 # Qdrant Sidecar 二进制（按需放置，不入库）
 qdrant/bin/
 
-# ---- 编辑器 / AI 工具（不入库，本地使用）----
+# ---- 编辑器 / AI 工具 / 内部文档（不入库，本地使用）----
 .vscode/
 .idea/
 # Claude Code 目录（本地偏好 + skill，不入库）
@@ -32,3 +32,6 @@ qdrant/bin/
 .agents/
 # skill 锁定文件（AI 工具生成）
 skills-lock.json
+# AI 工程规则与内部需求原文（内部文档，不入库）
+CLAUDE.md
+request.txt

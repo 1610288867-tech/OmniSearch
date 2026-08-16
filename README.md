@@ -119,8 +119,6 @@ cd desktop && npm run typecheck
 - 📐 [架构设计](docs/architecture.md) —— 唯一架构权威文档（18 章 + Final Consistency Checklist，MVP/P2/P3 边界）
 - 📝 [决策记录](docs/adr/) —— ADR-001~005（Worker 进程模型 / SQLite 队列 / Hybrid RRF / Caption 选型冻结 / FTS 模式与 point_id 冻结）
 - 📡 [API 文档](docs/api.md) —— 端点与字段明细（与前后端契约对齐）
-- 🤖 [工程规则](CLAUDE.md) —— 面向 AI Coding Agent 的 14 条不可违反规则
-- 📋 [需求原文](request.txt)
 
 ## 目录结构
 
