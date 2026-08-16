@@ -42,3 +42,11 @@ class IndexJobRepository:
         with self._db.connect() as c:
             row = c.execute("SELECT * FROM index_jobs ORDER BY id DESC LIMIT 1").fetchone()
             return dict(row) if row else None
+
+    def recent(self, limit: int = 20) -> list[dict]:
+        """最近 N 条作业（多 Root 扫描进度展示：当前 Root i/N 由 UI 计算）。"""
+        with self._db.connect() as c:
+            rows = c.execute(
+                "SELECT * FROM index_jobs ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [dict(r) for r in rows]

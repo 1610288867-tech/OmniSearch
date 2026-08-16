@@ -6,7 +6,9 @@ import { contextBridge, ipcRenderer } from "electron";
 import {
   IPC,
   type FailedTaskItem,
+  type IndexStatusResponse,
   type OmnisearchApi,
+  type RootsResponse,
   type SearchRequest,
   type SettingsUpdate,
   type SystemStatus,
@@ -28,6 +30,14 @@ const api: OmnisearchApi = {
   getTaskStatus: () => ipcRenderer.invoke(IPC.taskStatus) as Promise<TaskStats>,
   getFailedTasks: () => ipcRenderer.invoke(IPC.taskFailed) as Promise<FailedTaskItem[]>,
   retryTask: (taskId: number) => ipcRenderer.invoke(IPC.taskRetry, taskId) as Promise<TaskRetryResponse>,
+  // 扫描位置管理（对话框/盘符仅经 Main）
+  pickRootFolder: () => ipcRenderer.invoke(IPC.rootAddDialog) as Promise<string | null>,
+  listDrives: () => ipcRenderer.invoke(IPC.rootListDrives) as Promise<string[]>,
+  addRoot: (path: string) => ipcRenderer.invoke(IPC.rootAdd, path),
+  removeRoot: (path: string) => ipcRenderer.invoke(IPC.rootRemove, path),
+  toggleRoot: (path: string, enabled: boolean) => ipcRenderer.invoke(IPC.rootToggle, path, enabled),
+  getRoots: () => ipcRenderer.invoke(IPC.rootList) as Promise<RootsResponse>,
+  getIndexStatus: () => ipcRenderer.invoke(IPC.indexStatus) as Promise<IndexStatusResponse>,
 };
 
 contextBridge.exposeInMainWorld("omnisearch", api);

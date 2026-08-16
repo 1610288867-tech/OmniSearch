@@ -12,7 +12,7 @@ export const useSettingsStore = defineStore("settings", () => {
   const wKw = ref(1.0);
   const wSem = ref(1.0);
   const topK = ref(50);
-  const indexRoots = ref<string[]>([]);
+  const indexRoots = ref<Array<{ path: string; enabled: boolean; created_at: number }>>([]);
   const models = ref<Record<string, string>>({});
   const storage = ref({ db_bytes: 0, models_bytes: 0 });
   const saving = ref(false);

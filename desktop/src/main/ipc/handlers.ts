@@ -4,10 +4,14 @@
  * - search:query：M5 Hybrid Search（keyword/semantic/hybrid 经 mode）
  * - settings:* / task:*：M5 Settings + Task Dashboard
  */
-import { ipcMain } from "electron";
+import { BrowserWindow, dialog, ipcMain } from "electron";
+import * as fs from "node:fs";
 import {
   IPC,
   type FailedTaskItem,
+  type IndexRoot,
+  type IndexStatusResponse,
+  type RootsResponse,
   type SearchRequest,
   type SearchResponse,
   type SemanticSearchResponse,
@@ -58,4 +62,36 @@ export function registerIpcHandlers(pm: ProcessManager): void {
   ipcMain.handle(IPC.taskRetry, (_evt, taskId: number): Promise<TaskRetryResponse> =>
     guard(() => backend.retryTask(taskId)),
   );
+
+  // 扫描位置管理：原生对话框与盘符枚举只在 Main 进程（Renderer 不接触 fs/dialog）
+  ipcMain.handle(IPC.rootAddDialog, async (): Promise<string | null> => {
+    const win = BrowserWindow.getFocusedWindow() ?? undefined;
+    const result = await dialog.showOpenDialog(win as never, {
+      title: "选择要搜索的文件夹",
+      properties: ["openDirectory"],
+    });
+    return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
+  });
+
+  ipcMain.handle(IPC.rootListDrives, (): string[] => {
+    // Windows 本机可用盘符（A-Z 存在即列出；Root 为盘符根）
+    const drives: string[] = [];
+    for (let ch = 65; ch <= 90; ch++) {
+      const letter = String.fromCharCode(ch);
+      try {
+        if (fs.existsSync(`${letter}:\\`)) drives.push(`${letter}:\\`);
+      } catch {
+        /* 无权限/软驱等：跳过 */
+      }
+    }
+    return drives;
+  });
+
+  ipcMain.handle(IPC.rootList, (): Promise<RootsResponse> => guard(() => backend.getRoots()));
+  ipcMain.handle(IPC.rootAdd, (_evt, path: string): Promise<IndexRoot> => guard(() => backend.addRoot(path)));
+  ipcMain.handle(IPC.rootRemove, (_evt, path: string): Promise<RootsResponse> => guard(() => backend.removeRoot(path)));
+  ipcMain.handle(IPC.rootToggle, (_evt, path: string, enabled: boolean): Promise<IndexRoot> =>
+    guard(() => backend.toggleRoot(path, enabled)),
+  );
+  ipcMain.handle(IPC.indexStatus, (): Promise<IndexStatusResponse> => guard(() => backend.getIndexStatus()));
 }

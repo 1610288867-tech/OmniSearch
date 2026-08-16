@@ -82,7 +82,18 @@ M4 独立语义通道（M5 起 UI 已合并进 /search，端点保留）：`{que
 | Method | Path | 说明 |
 |---|---|---|
 | POST | `/index/scan` | `{root_paths: [..], scan_type: "full"|"incremental"}` → `{job_id, root_path, status}`（后台执行） |
-| GET | `/index/status` | `{running, jobs: [...]}`（轮询进度） |
+| GET | `/index/status` | `{running, jobs: [...]}`（最近作业；多 Root 顺序扫描进度） |
+
+## 扫描位置管理（Roots，产品增强）
+
+| Method | Path | 说明 |
+|---|---|---|
+| GET | `/index/roots` | `{roots: [{path, enabled, created_at, file_count}]}`（file_count = 已索引未删除文件数） |
+| POST | `/index/roots/add` | `{path}` → 规范化 + 校验后添加并**自动开始后台 full scan**；错误：`INVALID_ROOT`（400，不存在/不可访问）、`ROOT_ALREADY_EXISTS`（400，重复）、`ROOT_ALREADY_COVERED`（400，父子冲突，双向检测） |
+| POST | `/index/roots/remove` | `{path}` → 停止监听 + 不再扫描；**已索引数据保留**（不 DELETE 记录，默认语义） |
+| POST | `/index/roots/toggle` | `{path, enabled}` → 禁用=停止监听（数据保留）；启用=恢复监听（不自动重扫）；`ROOT_NOT_FOUND`（404） |
+
+规则：path 经 `canonical_root` 规范化（大小写 / slash / trailing slash / 盘符根统一）；重复与父子检测大小写不敏感；多 Root 顺序扫描（每 Root 一个 index_jobs，后台串行，无并行无 DAG）；持久化于 settings KV（重启后恢复，旧 `list[str]` 格式自动升级）。Renderer 经 Main 进程的原生对话框（`dialog.showOpenDialog`）/盘符枚举选择位置，不直接访问 fs。
 
 ## Settings（M5 §16）
 

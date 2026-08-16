@@ -24,6 +24,7 @@
 | 能力 | 说明 |
 |---|---|
 | 全量/增量扫描 | 8 线程扫描、Watchdog 实时监听（增/改/删/重命名）、删除软标记先行 |
+| 多扫描位置 | 任意盘符/文件夹多 Root（原生对话框选择）、重复/父子冲突拒绝、启用/禁用、移除保留已索引数据、顺序扫描进度 |
 | 文件名毫秒检索 | FTS5 contentless-delete，中文 jieba 前缀查询 |
 | 文档全文检索 | TXT / MD / PDF / DOCX → 分块 → 正文命中（含高亮片段证据） |
 | OCR 文字搜索 | 图片内文字（zh+en）→ 关键词通道（「识别到文字：New York 2026」） |
@@ -93,6 +94,7 @@ POST /api/v1/search {"query": "昨天的自由女神照片", "topK": 50}
 | POST | `/search` | **Hybrid Search**：`{query, topK, mode, stages?}` → `{parsed, results, total, latency_ms, degraded_channels}` |
 | POST | `/search/semantic` | 语义通道独立（兼容） |
 | POST | `/index/scan` · GET `/index/status` | 扫描作业 / 进度 |
+| GET/POST | `/index/roots` · `add`/`remove`/`toggle` | 扫描位置管理（多 Root：文件夹/盘符、重复与父子冲突拒绝） |
 | GET/PUT | `/settings` | 搜索模式 / w_kw·w_sem / topK / 索引目录 / 模型状态 / 存储 |
 | GET | `/task/status` · `/task/failed` | 任务队列统计 / 失败明细 |
 | POST | `/task/{id}/retry` · `/task/{id}/reindex` | 重试（超限 → 409）/ 重建任务 |

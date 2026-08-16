@@ -110,7 +110,7 @@ class SettingsResponse(BaseModel):
     w_kw: float
     w_sem: float
     topK: int
-    index_roots: list[str]
+    index_roots: list[dict]  # [{path, enabled, created_at}]（扫描位置管理；完整列表见 GET /index/roots）
     models: dict[str, str]  # {bge: ok|missing, caption: ok|missing}
     storage: dict[str, int]  # {db_bytes, models_bytes}
 
@@ -137,7 +137,7 @@ class TaskRetryResponse(BaseModel):
     status: str  # "retried" | "MAX_ATTEMPTS_EXCEEDED" | "TASK_NOT_FOUND"
 
 
-# ---------------- Index ----------------
+# ---------------- Index（含扫描位置管理） ----------------
 class ScanRequest(BaseModel):
     root_paths: list[str] = Field(..., min_length=1)
     scan_type: str = Field("full", pattern="^(full|incremental)$")
@@ -151,4 +151,23 @@ class ScanResponse(BaseModel):
 
 class IndexStatusResponse(BaseModel):
     running: bool
-    jobs: list[dict]
+    jobs: list[dict]  # 最近作业（多 Root 顺序扫描进度）
+
+
+class RootInfo(BaseModel):
+    path: str
+    enabled: bool
+    created_at: int
+    file_count: int  # 已索引未删除文件数（搜索统计）
+
+
+class RootsResponse(BaseModel):
+    roots: list[RootInfo]
+
+
+class RootPathRequest(BaseModel):
+    path: str = Field(..., min_length=1, description="绝对路径（文件夹或盘符根）")
+
+
+class RootToggleRequest(RootPathRequest):
+    enabled: bool

@@ -9,7 +9,7 @@ import type { SettingsResponse } from "../src/shared/contracts";
 
 const RESP: SettingsResponse = {
   search_mode: "hybrid", w_kw: 1.0, w_sem: 1.0, topK: 50,
-  index_roots: ["D:\\photos"], models: { bge: "ok", caption: "ok" },
+  index_roots: [{ path: "D:\\photos", enabled: true, created_at: 1 }], models: { bge: "ok", caption: "ok" },
   storage: { db_bytes: 1024, models_bytes: 2048 },
 };
 
@@ -33,7 +33,7 @@ describe("settings store", () => {
     expect(store.loaded).toBe(true);
     expect(store.searchMode).toBe("hybrid");
     expect(store.wKw).toBe(1.0);
-    expect(store.indexRoots).toEqual(["D:\\photos"]);
+    expect(store.indexRoots).toEqual([{ path: "D:\\photos", enabled: true, created_at: 1 }]);
     expect(store.models["bge"]).toBe("ok");
     expect(store.storage.models_bytes).toBe(2048);
   });

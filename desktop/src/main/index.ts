@@ -141,7 +141,19 @@ async function probeRenderer(wc: WebContents): Promise<void> {
       }
       if (await tabClick('设置')) {
         const page = document.querySelector('.settings-page');
-        out.settings = { hasPage: !!page, hasCards: (page ? page.querySelectorAll('.card').length : 0) };
+        const btns = page ? Array.from(page.querySelectorAll('button')) : [];
+        out.settings = {
+          hasPage: !!page,
+          hasCards: (page ? page.querySelectorAll('.card').length : 0),
+          // 扫描位置管理：添加按钮 + Root 列表 + 开关/删除
+          roots: (page ? page.querySelectorAll('.root').length : 0),
+          hasAddFolder: btns.some((b) => b.textContent.includes('添加文件夹')),
+          hasAddDrive: btns.some((b) => b.textContent.includes('添加磁盘')),
+          hasToggle: !!page.querySelector('.root .toggle'),
+          hasRemove: !!page.querySelector('.root .danger'),
+          // 模型状态真实渲染（settings 500 回归：models 显示"就绪"）
+          modelsReady: page ? page.querySelectorAll('.models li span[data-ok="true"]').length : 0,
+        };
       }
       return out;
     })()

@@ -66,7 +66,7 @@ def create_app() -> FastAPI:
             on_deleted_paths=lambda paths: [index_service.handle_delete_path(p) for p in paths],
             on_renamed=index_service.handle_rename,
         )
-        configure_index(index_service, jobs_repo, settings_repo, watch)
+        configure_index(index_service, jobs_repo, settings_repo, watch, db)
 
         # M5：时间/解析/过滤（架构 §8/§12.2 单一实现）
         time_ranges = TimeRangeService()
@@ -106,7 +106,8 @@ def create_app() -> FastAPI:
         configure_tasks(tasks_repo)
         configure_settings(SettingsService(db, settings_repo, models_dir(data_dir)))
 
-        watch.start(settings_repo.get_index_roots())  # 重启场景恢复监听；首次扫描经 add_roots 动态启动
+        # 重启场景恢复监听（roots 为 dict 结构 [{path, enabled, created_at}]）；首次扫描经 add_roots 动态启动
+        watch.start([r["path"] for r in settings_repo.get_index_roots() if r.get("enabled", True)])
         yield
         watch.stop()
         logger.info("server shutting down: WAL checkpoint")

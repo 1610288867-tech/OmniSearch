@@ -72,6 +72,7 @@ class WatchService:
         self._pending: dict[str, set[str]] = {}
         self._moved: list[tuple[str, str]] = []
         self._timer: threading.Timer | None = None
+        self._watches: dict[str, object] = {}  # root（规范化）→ watchdog watch 句柄（remove_root 用）
 
     # ---------------- 生命周期 ----------------
 
@@ -86,7 +87,7 @@ class WatchService:
         observer = Observer()
         handler = _Handler(self)
         for root in valid:
-            observer.schedule(handler, root, recursive=True)
+            self._watches[root] = observer.schedule(handler, root, recursive=True)
         try:
             observer.start()
         except Exception:  # noqa: BLE001 —— 打开句柄失败等竞态：不阻塞 lifespan
@@ -106,8 +107,21 @@ class WatchService:
             self.start(roots)
             return
         for root in valid:
-            self._observer.schedule(_Handler(self), root, recursive=True)
+            self._watches[root] = self._observer.schedule(_Handler(self), root, recursive=True)
         logger.info("watch roots added: %s", valid)
+
+    def remove_root(self, root: str) -> None:
+        """移除监听根（扫描位置管理：remove/toggle off 时停止监听，不触碰已索引数据）。"""
+        from omnisearch.common.utils.paths import canonical_root
+
+        key = canonical_root(root)
+        watch = self._watches.pop(key, None)
+        if watch is not None and self._observer is not None:
+            try:
+                self._observer.unschedule(watch)
+            except Exception:  # noqa: BLE001 —— 句柄已失效等竞态：仅记日志
+                logger.warning("watch unschedule failed for %s", key, exc_info=True)
+            logger.info("watch root removed: %s", key)
 
     @staticmethod
     def _valid_roots(roots: list[str]) -> list[str]:
@@ -125,6 +139,7 @@ class WatchService:
             if self._timer:
                 self._timer.cancel()
                 self._timer = None
+            self._watches.clear()
         if self._observer:
             self._observer.stop()
             self._observer.join(timeout=5)

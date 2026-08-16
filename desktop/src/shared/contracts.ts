@@ -121,7 +121,7 @@ export interface SettingsResponse {
   w_kw: number;
   w_sem: number;
   topK: number;
-  index_roots: string[];
+  index_roots: Array<{ path: string; enabled: boolean; created_at: number }>; // 完整列表见 GET /index/roots
   models: Record<string, string>; // {bge: ok|missing, caption: ok|missing}
   storage: { db_bytes: number; models_bytes: number };
 }
@@ -131,6 +131,35 @@ export interface SettingsUpdate {
   w_kw?: number;
   w_sem?: number;
   topK?: number;
+}
+
+// ---------- 扫描位置管理（Roots，产品增强） ----------
+export interface IndexRoot {
+  path: string;
+  enabled: boolean;
+  created_at: number;
+  file_count: number;
+}
+
+export interface RootsResponse {
+  roots: IndexRoot[];
+}
+
+export interface IndexJob {
+  id: number;
+  root_path: string;
+  scan_type: string;
+  status: string; // RUNNING | DONE | FAILED | STOPPED
+  total_files: number;
+  scanned_files: number;
+  error_count: number;
+  started_at: number | null;
+  finished_at: number | null;
+}
+
+export interface IndexStatusResponse {
+  running: boolean;
+  jobs: IndexJob[];
 }
 
 // ---------- Task Dashboard（M5 §17） ----------
@@ -166,6 +195,14 @@ export const IPC = {
   taskStatus: "task:status",
   taskFailed: "task:failed",
   taskRetry: "task:retry",
+  // 扫描位置管理：对话框/盘符仅经 Main（Renderer 不接触 fs/dialog）
+  rootAddDialog: "index:add-root-dialog",
+  rootListDrives: "index:list-drives",
+  rootList: "index:roots",
+  rootAdd: "index:root-add",
+  rootRemove: "index:root-remove",
+  rootToggle: "index:root-toggle",
+  indexStatus: "index:status",
 } as const;
 
 // ---------- preload 暴露的 API（window.omnisearch） ----------
@@ -180,4 +217,12 @@ export interface OmnisearchApi {
   getTaskStatus(): Promise<TaskStats>;
   getFailedTasks(): Promise<FailedTaskItem[]>;
   retryTask(taskId: number): Promise<TaskRetryResponse>;
+  // 扫描位置管理（对话框/盘符仅经 Main 进程）
+  pickRootFolder(): Promise<string | null>;       // dialog.showOpenDialog（取消 → null）
+  listDrives(): Promise<string[]>;                // Windows 本机盘符（如 ["C:\\", "D:\\"]）
+  addRoot(path: string): Promise<IndexRoot>;
+  removeRoot(path: string): Promise<RootsResponse>;
+  toggleRoot(path: string, enabled: boolean): Promise<IndexRoot>;
+  getRoots(): Promise<RootsResponse>;
+  getIndexStatus(): Promise<IndexStatusResponse>;
 }

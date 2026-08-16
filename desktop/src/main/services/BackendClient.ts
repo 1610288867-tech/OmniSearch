@@ -4,6 +4,9 @@
  */
 import type {
   FailedTaskItem,
+  IndexRoot,
+  IndexStatusResponse,
+  RootsResponse,
   SearchRequest,
   SearchResponse,
   SemanticSearchResponse,
@@ -105,5 +108,26 @@ export class BackendClient {
 
   retryTask(taskId: number): Promise<TaskRetryResponse> {
     return this.post<TaskRetryResponse>(`/api/v1/task/${taskId}/retry`, {}, 5000);
+  }
+
+  // 扫描位置管理（Roots）
+  getRoots(): Promise<RootsResponse> {
+    return this.get<RootsResponse>("/api/v1/index/roots", 5000);
+  }
+
+  addRoot(path: string): Promise<IndexRoot> {
+    return this.post<IndexRoot>("/api/v1/index/roots/add", { path }, 5000);
+  }
+
+  removeRoot(path: string): Promise<RootsResponse> {
+    return this.post<RootsResponse>("/api/v1/index/roots/remove", { path }, 5000);
+  }
+
+  toggleRoot(path: string, enabled: boolean): Promise<IndexRoot> {
+    return this.post<IndexRoot>("/api/v1/index/roots/toggle", { path, enabled }, 5000);
+  }
+
+  getIndexStatus(): Promise<IndexStatusResponse> {
+    return this.get<IndexStatusResponse>("/api/v1/index/status", 5000);
   }
 }
