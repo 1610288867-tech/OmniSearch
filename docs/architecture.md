@@ -813,7 +813,18 @@ OmniSearch/
 - 测试：pytest 逻辑层 27 项（FakeReader 注入）+ 真实 Windows E2E（fallback 路径 5/5 PASS；
   真实 USN 读取需管理员，标记 SKIPPED）
 
-P2.1 后续（未实现）：hash 复用 AI 结果｜Worker 自动重试/任务取消/启动恢复｜优雅退出 drain｜崩溃自愈｜托盘+全局快捷键｜**Local LLM Query Parser（可选增强）**｜模型版本升级与重建｜每日对账｜缩略图缓存｜Qdrant payload 冗余过滤优化｜Benchmark 调优（HNSW/batch_size/批量参数）｜PyInstaller + electron-builder 打包。
+**P2.2 已完成（2026-08-16）：content_hash AI 结果复用**（ADR-007）。
+
+- hash：xxh3_64 流式计算（1MB chunk，实测 ~2.4GB/s），Worker pipeline 内计算并写回
+  files.content_hash（架构 §7.1 预留列，无需迁移）
+- 复用规则：同 file_id 内容未变（touch/重扫）→ 跳过全部 AI；复制/跨路径移动（同 hash，
+  含 is_deleted=1 源）→ 复用 ocr_text + chunks + embedding；rename（file_id 保留）天然复用
+- Qdrant：读旧 vector → 按新 logical_key 重新计算 point_id → upsert（wait=true）→ 成功后
+  短事务复制 chunks（embedding_status=SUCCESS）——免 BGE inference；禁止直接复制旧 point_id
+- 失败一致性：hash/Qdrant/事务失败 → task FAILED，旧文件产物完整保留（reindex 一致性 §11.5）
+- 测试：pytest 19 项（A-G 矩阵）+ 真实 Windows E2E（rename/copy/modify 全链路 PASS）
+
+P2.2 后续（未实现）：Worker 自动重试/任务取消/启动恢复｜优雅退出 drain｜崩溃自愈｜托盘+全局快捷键｜**Local LLM Query Parser（可选增强）**｜模型版本升级与重建｜每日对账｜缩略图缓存｜Qdrant payload 冗余过滤优化｜Benchmark 调优（HNSW/batch_size/批量参数）｜PyInstaller + electron-builder 打包。
 
 ## 15.3 Phase 3 — Future Extensions（仅记录）
 

@@ -114,14 +114,24 @@ def test_watch_rename_keeps_file_id(watch_env):
 
 
 def test_watch_rename_conflict_rescans(watch_env):
-    """目标 path 已存在：不覆盖、不删除目标记录；source 消失 → 删除（重新扫描语义）。"""
+    """目标 path 已存在（不同内容）：不覆盖、不删除目标记录；source 消失 → 删除（重新扫描语义）。
+
+    注：目标与源 stat 不同（不同 size）+ 目标有 AI 产物 → 真 conflict（P2.2 合并判定排除）。
+    """
     db, svc, watch, root = watch_env
     a = root / "a.txt"
     b = root / "b.txt"
     a.write_text("A", encoding="utf-8")
-    b.write_text("B", encoding="utf-8")
+    b.write_text("B" * 8, encoding="utf-8")  # 与 a 不同 size（stat 不同 → 真 conflict）
     assert _wait_until(lambda: len([r for r in _paths(db) if not r["is_deleted"]]) == 2)
     b_fid = db.connect().execute("SELECT id FROM files WHERE filename='b.txt'").fetchone()["id"]
+    with db.connect() as c:  # b 为真实文件（有 AI 产物，防误合并）
+        c.execute(
+            "INSERT INTO chunks (file_id, source_type, chunk_index, chunk_text, chunk_text_seg) "
+            "VALUES (?, 'doc_chunk', 0, 'b', 'b')",
+            (b_fid,),
+        )
+        c.commit()
 
     os.replace(a, b)  # 覆盖式重命名（Windows os.rename 会失败，用 os.replace）
     # conflict：b 记录不得被覆盖删除；a 消失 → is_deleted=1

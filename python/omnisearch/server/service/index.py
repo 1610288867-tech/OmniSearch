@@ -269,16 +269,55 @@ class IndexService:
         self._fts.delete(file_id)
 
     def handle_rename(self, src: str, dst: str) -> None:
-        """RENAME 文件身份规则（architecture.md §11.4）。"""
+        """RENAME 文件身份规则（architecture.md §11.4）。
+
+        P2.2 修复：Windows watchdog 的 rename 常伴生 created(dst) 事件——若该事件先于
+        moved 被 flush，会在 dst 路径留下「同一文件的假记录」（stat 与 src 相同）。
+        此时视为 rename（合并假记录，保留 src file_id + AI 产物），而非真 conflict
+        （dst 为不同文件时才 rescan both）。
+        """
         src = normalize(src)
         dst = normalize(dst)
         src_row = self._files.get_by_path(src)
         dst_row = self._files.get_by_path(dst)
         if dst_row and not dst_row["is_deleted"]:
-            # conflict：不自动覆盖、不删除目标记录——重新扫描 source + target
-            logger.warning("rename conflict src=%s dst=%s → rescan both", src, dst)
-            self.handle_changes([src, dst])
-            return
+            # 合并判定（假 conflict）：stat 相同（rename 伴生 created 的同一文件）
+            # **且 dst 无 AI 产物**——有产物说明 dst 是真实处理过的文件，绝不合并（真 conflict）
+            same_file = (
+                src_row is not None
+                and dst_row["mtime_ns"] == src_row["mtime_ns"]
+                and dst_row["size_bytes"] == src_row["size_bytes"]
+            )
+            if same_file:
+                with self._db.connect() as c:
+                    n_chunks = c.execute(
+                        "SELECT count(*) n FROM chunks WHERE file_id=?", (dst_row["id"],)
+                    ).fetchone()["n"]
+                if n_chunks > 0:
+                    same_file = False
+            if same_file:
+                # 假 conflict：dst 行是 rename 伴生 created 的同一文件 → 物理删除假记录（含 FTS），走正常 rename
+                logger.info("rename merged (watchdog created artifact) src=%s dst=%s", src, dst)
+                conn = self._db.connect()
+                try:
+                    conn.execute("BEGIN")
+                    conn.execute("DELETE FROM chunks WHERE file_id=?", (dst_row["id"],))
+                    conn.execute("DELETE FROM ocr_text WHERE file_id=?", (dst_row["id"],))
+                    conn.execute("DELETE FROM exif WHERE file_id=?", (dst_row["id"],))
+                    self._fts.delete(dst_row["id"], conn=conn)
+                    conn.execute("DELETE FROM files WHERE id=?", (dst_row["id"],))
+                    conn.execute("COMMIT")
+                except Exception:
+                    conn.execute("ROLLBACK")
+                    raise
+                finally:
+                    conn.close()
+                dst_row = None
+            else:
+                # 真 conflict：不自动覆盖、不删除目标记录——重新扫描 source + target
+                logger.warning("rename conflict src=%s dst=%s → rescan both", src, dst)
+                self.handle_changes([src, dst])
+                return
         if src_row is None:
             self.handle_changes([dst])
             return

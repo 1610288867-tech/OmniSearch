@@ -119,5 +119,15 @@ class VectorStore:
         if point_ids:
             self._client.delete(collection_name=COLLECTION_NAME, points_selector=point_ids, wait=True)
 
+    def get_vectors(self, point_ids: list[int]) -> dict[int, tuple[list[float], dict]]:
+        """读取既有 point 的 vector + payload（P2.2 AI 结果复用：免重新 BGE inference）。
+
+        返回 {point_id: (vector, payload)}；缺失的 point 不在结果中。
+        """
+        if not point_ids:
+            return {}
+        hits = self._client.retrieve(collection_name=COLLECTION_NAME, ids=point_ids, with_vectors=True)
+        return {h.id: (h.vector, h.payload or {}) for h in hits}
+
     def count(self) -> int:
         return self._client.count(collection_name=COLLECTION_NAME).count
