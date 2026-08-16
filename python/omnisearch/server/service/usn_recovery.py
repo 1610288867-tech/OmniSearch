@@ -56,6 +56,7 @@ class UsnRecoveryService:
         self._index = index
         self._settings = settings
         self._reader = reader  # UsnReader 或测试注入的 fake；None → 永远降级
+        self._fallback_roots: list[str] = []  # U5：run() 后需增量扫描降级的 root
 
     # ================= 入口 =================
 
@@ -66,7 +67,12 @@ class UsnRecoveryService:
         - Journal 回绕/重建（_JournalRotated）→ 重置 cursor（旧 cursor 失效）
         - 读取/处理失败（crash 等）→ **保留 cursor**（未推进 → 重启重放，幂等兜底，不丢事件）
         任何卷失败只降级该卷（记录 warning），不影响其他卷。
+
+        U5 修正：fallback 逐卷传导——`fallback_roots` 属性返回「确实需要增量扫描降级的 root」
+        （失败卷的 roots），成功卷不重复扫描（原实现 all-or-nothing：任一卷失败 → 全部 root 重扫，
+        成功卷白做一遍）。返回 bool 保持向后兼容。
         """
+        self._fallback_roots = list(roots)  # 默认全量 fallback；成功卷逐步剔除
         if not roots or self._reader is None:
             return False
         volumes: dict[str, list[str]] = {}
@@ -91,7 +97,15 @@ class UsnRecoveryService:
                 ok = False
             if ok:
                 any_ok = True
+                for r in vol_roots:
+                    if r in self._fallback_roots:
+                        self._fallback_roots.remove(r)
         return any_ok
+
+    @property
+    def fallback_roots(self) -> list[str]:
+        """run() 后需增量扫描降级的 root 列表（成功卷已剔除；未调用 run 时为空）。"""
+        return self._fallback_roots
 
     # ================= 单卷恢复 =================
 
@@ -131,6 +145,13 @@ class UsnRecoveryService:
             start_usn = next_usn
             if len(records) < 100:  # 不足一批 → journal 已追平
                 break
+        else:
+            # U6：到达 MAX_BATCHES 上限仍每批满载 → 截断。必须告警——
+            # 未消费事件依赖下次增量/全量扫描的 sync_deleted/upsert 兜底，不能静默丢。
+            logger.warning(
+                "USN journal exceeds MAX_BATCHES=%d for %s; tail events deferred to scan reconcile",
+                MAX_BATCHES, vol,
+            )
 
         if not all_records:
             return True  # 无变化，cursor 无需推进
@@ -158,9 +179,14 @@ class UsnRecoveryService:
         new_paths: dict[int, str] = {}   # file_ref → 新路径（RENAME_NEW）
         upserts: dict[int, str] = {}     # file_ref → 路径（CREATE/EXTEND/OVERWRITE）
         deletes: dict[int, str] = {}     # file_ref → 路径（DELETE）
+        unresolved_new: set[int] = set()  # U7：RENAME_NEW 路径解析失败（MFT 瞬态不可读等）
         for rec in records:
             path = self._reader.resolve_path(vol, rec.parent_ref, rec.filename)
             if path is None:
+                # U7：RENAME_NEW 解析失败 ≠ 「rename 出 root」——可能只是 MFT 记录瞬态
+                # 不可读（root 内 rename）。必须区分，否则会把仍存在的文件误删。
+                if rec.reason & USN_REASON_RENAME_NEW_NAME:
+                    unresolved_new.add(rec.file_ref)
                 logger.debug("usn path resolve failed (file_ref=%d) → discard", rec.file_ref)
                 continue
             if not belongs(path):
@@ -174,18 +200,39 @@ class UsnRecoveryService:
             elif rec.reason & (USN_REASON_FILE_CREATE | USN_REASON_EXTEND | USN_REASON_OVERWRITE):
                 upserts[rec.file_ref] = path
 
-        # 应用顺序：先 delete（清理）→ upsert（create/modify）→ rename
-        for path in deletes.values():
+        # rename 配对（U3 修正）：先确定 rename 涉及的 file_ref，其 old/new 路径
+        # 不得再被 upsert 软删（「修改+重命名」时 upsert 旧路径会置 is_deleted=1，
+        # 而 handle_rename 只改 path 不重置 → 新路径行以 deleted 落地、文件消失）。
+        rename_refs = set(old_paths) & set(new_paths)
+        for frn in rename_refs:
+            upserts.pop(frn, None)
+            deletes.pop(frn, None)
+
+        # 应用顺序：delete（清理，排除已 rename 的）→ rename（保留 file_id）→ upsert（其余增改）
+        for frn, path in deletes.items():
             self._index.handle_delete_path(path)
-        if upserts:
-            self._index.handle_changes(list(upserts.values()))
         for frn in old_paths:
             old = old_paths[frn]
             new = new_paths.get(frn)
             if new:
+                if old == new:
+                    # U4 防护：目录重命名时子文件 OLD/NEW 记录都解析到新路径（历史名无法
+                    # 从 MFT 重建）——src==dst 的 rename 会新建错误 file_id + 幽灵旧行，
+                    # 丢弃该事件（下次全量/增量扫描的 sync_deleted 兜底清理）
+                    logger.debug("usn rename src==dst (%s) → discard (dir-rename artifact)", old)
+                    continue
                 self._index.handle_rename(old, new)  # 保留 file_id（MVP rename 规则）
+            elif frn in unresolved_new:
+                # U7：NEW 解析失败（root 内 rename 的瞬态不可读）——不删旧路径，避免误删
+                # 仍存在的文件；由下次增量/全量扫描的 sync_deleted/upsert 兜底收敛。
+                logger.warning(
+                    "usn rename with unresolved NEW (file_ref=%d, old=%s) → defer, avoid wrongful delete",
+                    frn, old,
+                )
             else:
                 self._index.handle_delete_path(old)  # rename 出 active root → 旧路径消失
+        if upserts:
+            self._index.handle_changes(list(upserts.values()))
         for frn in new_paths:
             if frn not in old_paths:
                 self._index.handle_changes([new_paths[frn]])  # rename 进 active root

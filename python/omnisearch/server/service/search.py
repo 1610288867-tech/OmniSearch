@@ -163,7 +163,7 @@ class SearchService:
         t_final = time.perf_counter()
         w_kw, w_sem = self._weights()
         ranked = self._rrf(kw_candidates, sem_candidates, w_kw, w_sem)
-        results = self._finalize(ranked, top_k, kw_candidates, sem_candidates, unified)
+        results = self._finalize(ranked, top_k, kw_candidates, sem_candidates, unified, where, params)
         total_ms = (time.perf_counter() - started) * 1000
         stages.update({"parser": parser_ms, "finalize": (time.perf_counter() - t_final) * 1000, "total": total_ms})
         logger.debug(
@@ -237,9 +237,13 @@ class SearchService:
         return merged
 
     def _semantic_channel(self, semantic_text: str, where: str, params: list, top_k: int) -> dict[int, ChannelCandidate]:
-        """Vector 通道：BGE embed → Qdrant topK → 三元组校验 → canonical → file_id 去重。"""
+        """Vector 通道：BGE embed → Qdrant topK → 三元组校验 → canonical → file_id 去重。
+
+        H2 修正：候选截断固定 FTS_TOP（与 FTS 通道对称，§12.3 top-200）——
+        原实现绑定用户 topK（默认 50）导致双通道候选池不对称、结果随 topK 变化。
+        """
         assert self._semantic is not None
-        hits = self._semantic.search(semantic_text, top_k=top_k, where=where, params=params)
+        hits = self._semantic.search(semantic_text, top_k=max(top_k, FTS_TOP), where=where, params=params)
         return {
             h["file_id"]: ChannelCandidate(
                 score=h["semantic_score"], rank=i + 1,
@@ -348,17 +352,23 @@ class SearchService:
         kw: dict[int, ChannelCandidate],
         sem: dict[int, ChannelCandidate],
         unified: UnifiedFilter,
+        where: str = "f.is_deleted = 0",
+        params: list | None = None,
     ) -> list[dict]:
         top = ranked[:top_k]
         if not top:
             return []
         fids = [fid for fid, _ in top]
         with self._db.connect() as c:
+            # H3 修正：回查同样应用 canonical WHERE（三处一致——通道过滤与 finalize 回查
+            # 之间的删除竞态不得让 is_deleted=1 的文件进入本次结果）
             rows = {
                 r["id"]: r
                 for r in c.execute(
-                    f"SELECT f.*, e.datetime_original_epoch FROM files f LEFT JOIN exif e ON e.file_id = f.id WHERE f.id IN ({','.join('?' * len(fids))})",
-                    fids,
+                    f"""SELECT f.*, e.datetime_original_epoch FROM files f
+                        LEFT JOIN exif e ON e.file_id = f.id
+                        WHERE f.id IN ({','.join('?' * len(fids))}) AND {where}""",
+                    (*fids, *(params or [])),
                 ).fetchall()
             }
             # 正文/OCR 证据片段（仅最终结果，一次批量取）

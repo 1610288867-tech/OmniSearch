@@ -46,16 +46,36 @@ def _wait_idle(url, token, timeout_s=300):
     raise TimeoutError("tasks/index not idle")
 
 
+def _wait_ports(data_dir: Path, timeout_s: float = 30) -> dict:
+    """T5：等待 dev.py 落盘端口文件（dev.py 在 spawn 子进程前写入），返回 {fastapi, ...}。"""
+    ports_file = data_dir / ".omnisearch-ports.json"
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if ports_file.exists():
+            try:
+                data = json.loads(ports_file.read_text(encoding="utf-8"))
+                if data.get("fastapi"):
+                    return data
+            except (ValueError, OSError):
+                pass
+        time.sleep(0.5)
+    raise TimeoutError("dev.py did not write .omnisearch-ports.json")
+
+
 def _start(data_dir: Path, log: Path):
     env = {**os.environ}
+    ports_file = data_dir / ".omnisearch-ports.json"
+    if ports_file.exists():  # 防读上次运行的旧端口（dev.py 崩溃未重写）
+        ports_file.unlink()
     proc = subprocess.Popen(
         [sys.executable, str(REPO / "python" / "scripts" / "dev.py"), "--dev-data", str(data_dir)],
         stdout=log.open("w"), stderr=subprocess.STDOUT, env=env, cwd=str(REPO),
     )
+    base = f"http://127.0.0.1:{_wait_ports(data_dir)['fastapi']}"
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen("http://127.0.0.1:8734/health", timeout=2) as r:
+            with urllib.request.urlopen(base + "/health", timeout=2) as r:
                 if r.status == 200:
                     break
         except Exception:
@@ -65,7 +85,7 @@ def _start(data_dir: Path, log: Path):
         if "token=" in line:
             token = line.split("token=", 1)[1].strip()
             break
-    return proc, token
+    return proc, token, base
 
 
 def _stop():
@@ -102,12 +122,12 @@ def main() -> None:
     # ============ 阶段 1：启动 + 初始扫描 ============
     _phase("阶段 1：启动应用 + 初始扫描")
     _stop()
-    proc, token = _start(data_dir, log)
-    _post("http://127.0.0.1:8734", token, "/api/v1/index/roots/add", {"path": str(e2e)})
-    _wait_idle("http://127.0.0.1:8734", token)
+    proc, token, base = _start(data_dir, log)
+    _post(base, token, "/api/v1/index/roots/add", {"path": str(e2e)})
+    _wait_idle(base, token)
     (e2e / "基线文件.txt").write_text("基线内容", encoding="utf-8")
-    _post("http://127.0.0.1:8734", token, "/api/v1/search", {"query": "基线"})
-    _wait_idle("http://127.0.0.1:8734", token)
+    _post(base, token, "/api/v1/search", {"query": "基线"})
+    _wait_idle(base, token)
     print("初始扫描完成", flush=True)
 
     # ============ 阶段 2：停止应用（模拟关闭期） ============
@@ -130,10 +150,10 @@ def main() -> None:
     # ============ 阶段 4：重新启动（不手动扫描） ============
     _phase("阶段 4：重新启动（USN 优先 / fallback 增量扫描）")
     t0 = time.perf_counter()
-    proc2, token2 = _start(data_dir, log)
+    proc2, token2, base2 = _start(data_dir, log)
     startup_s = time.perf_counter() - t0
     # 等待恢复完成（USN 同步处理 / fallback 后台增量扫描）
-    _wait_idle("http://127.0.0.1:8734", token2)
+    _wait_idle(base2, token2)
     recovery_s = time.perf_counter() - t0
 
     # USN 可用性判定（日志）
@@ -151,9 +171,10 @@ def main() -> None:
         ("基线内容", "基线文件.txt", "in"),            # 旧文件仍可搜
         ("重命名内容", "重命名后.txt", "in"),
     ]
+    total_checks = len(checks) + 1  # T1 修正：+DELETE 检查（原硬编码 8 与实际检查数不符 → 恒 FAIL）
     passed = 0
     for q, expect_file, mode in checks:
-        body = _post("http://127.0.0.1:8734", token2, "/api/v1/search", {"query": q, "topK": 10, "mode": "keyword"})
+        body = _post(base2, token2, "/api/v1/search", {"query": q, "topK": 10, "mode": "keyword"})
         names = [r["filename"] for r in body["results"]]
         ok = expect_file in names if mode == "in" else expect_file not in names
         print(f"  [{q}] → {expect_file}: {'OK' if ok else 'FAIL'} (total={body['total']})", flush=True)
@@ -170,11 +191,11 @@ def main() -> None:
     conn.close()
     passed += 1 if deleted_ok else 0
 
-    print(f"\n=== P2.1 E2E {'PASS' if passed == 8 else 'FAIL'}（{passed}/8） ===", flush=True)
+    print(f"\n=== P2.1 E2E {'PASS' if passed == total_checks else 'FAIL'}（{passed}/{total_checks}） ===", flush=True)
     print(f"性能记录（无硬性承诺）：startup={startup_s:.1f}s recovery_to_idle={recovery_s:.1f}s "
           f"USN={usn_used} fallback={fallback_used}", flush=True)
     _stop()
-    sys.exit(0 if passed == 8 else 1)
+    sys.exit(0 if passed == total_checks else 1)
 
 
 if __name__ == "__main__":

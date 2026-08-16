@@ -14,6 +14,17 @@ from omnisearch.server.database.migrations.migrate import migrate
 REPO_ROOT = Path(__file__).resolve().parents[2]
 QDRANT_BIN = REPO_ROOT / "qdrant" / "bin" / "qdrant.exe"
 
+# T7：测试用「手动 os.environ[set] → 断言失败时 pop 不执行」会泄漏幽灵路径到后续用例。
+# 这里做全局兜底清理（autouse teardown）；正常路径下各测试自管 set/pop 不变。
+_ENV_KEYS = ("OMNISEARCH_DEV_DATA", "OMNISEARCH_TOKEN", "OMNISEARCH_QDRANT_HTTP_PORT", "OMNISEARCH_QDRANT_GRPC_PORT")
+
+
+@pytest.fixture(autouse=True)
+def _clean_omnisearch_env():
+    yield
+    for k in _ENV_KEYS:
+        os.environ.pop(k, None)
+
 
 @pytest.fixture()
 def db(tmp_path) -> Database:
@@ -65,10 +76,17 @@ def qdrant_server(tmp_path_factory) -> str:
 
 @pytest.fixture(scope="session")
 def bge() -> "BGEEmbeddingProvider":
-    """真实 BGE-small-zh ONNX（模型位于 dev-data/models，首次运行需先下载）。"""
+    """真实 BGE-small-zh ONNX（模型位于 dev-data/models）。
+
+    T3 修正：模型缺失 → skip（与 qdrant_server 的 skip 策略一致），
+    而非抛 error 让整批用例红——新检出可先跑 download_models.py。
+    """
     from omnisearch.common.embedding import BGEEmbeddingProvider
     from omnisearch.common.utils.models import models_dir
 
-    provider = BGEEmbeddingProvider(models_dir(REPO_ROOT / "dev-data"))
+    model_dir = models_dir(REPO_ROOT / "dev-data")
+    if not (model_dir / "model.onnx").exists():
+        pytest.skip("BGE model not found — run python python/scripts/download_models.py")
+    provider = BGEEmbeddingProvider(model_dir)
     provider.dim  # 触发加载
     return provider

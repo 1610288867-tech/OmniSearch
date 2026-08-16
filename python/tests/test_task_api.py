@@ -78,12 +78,13 @@ def test_retry_success(client):
 
 
 def test_retry_max_attempts_exceeded(client):
-    """attempt >= max_attempts → 409 MAX_ATTEMPTS_EXCEEDED（§7.1，只能 reindex）。"""
+    """E4：attempt >= max_attempts → 200 + {status: MAX_ATTEMPTS_EXCEEDED}（业务状态非传输错误，
+    前端 retry() 能拿到 status 提示「只能 reindex」，而不是零反馈的 409 异常）。"""
     c, repo = client
     tid, _ = _seed_task(repo._db, TaskStatus.FAILED, attempt=3, max_attempts=3)
     resp = c.post(f"/api/v1/task/{tid}/retry")
-    assert resp.status_code == 409
-    assert "MAX_ATTEMPTS_EXCEEDED" in resp.text
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "MAX_ATTEMPTS_EXCEEDED"
     with repo._db.connect() as conn:
         assert conn.execute("SELECT status FROM ai_tasks WHERE id=?", (tid,)).fetchone()["status"] == "FAILED"
 
@@ -91,7 +92,7 @@ def test_retry_max_attempts_exceeded(client):
 def test_retry_not_found(client):
     c, _ = client
     resp = c.post("/api/v1/task/99999/retry")
-    assert resp.status_code == 409
+    assert resp.status_code == 404  # 资源真不存在 → 404（区别于业务状态）
     assert "TASK_NOT_FOUND" in resp.text
 
 

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, tzinfo
 
 from omnisearch.common.utils.seg import seg_text
-from omnisearch.server.service.time_range import TimeRange, TimeRangeService, _DATE, _RANGE_FULL
+from omnisearch.server.service.time_range import TimeRange, TimeRangeService, _DATE_CN, _DATE_YMD, _RANGE_FULL
 
 logger = logging.getLogger("omnisearch.server.query_parser")
 
@@ -90,7 +90,7 @@ class QueryParser:
                 out.time_range = self._time.resolve(word, now=now, tz=tz, hint=hint)
                 if out.time_range is not None:
                     return text.replace(word, " ", 1)
-        m = _RANGE_FULL.search(text) or _DATE.search(text)
+        m = _RANGE_FULL.search(text) or _DATE_YMD.search(text) or _DATE_CN.search(text)
         if m:
             out.time_range = self._time.resolve(m.group(0), now=now, tz=tz, hint=hint)
             if out.time_range is not None:
@@ -120,14 +120,20 @@ class QueryParser:
         return text
 
     def _strip_extensions(self, text: str, out: ParsedQuery) -> str:
+        # H5：扩展名若与已抽出的文件类型同值（仅 'doc' 会碰撞）→ 视为冗余，不重复叠加。
+        # 例：'文档 doc'/'doc文档' → file_types=['doc']，若再 AND 扩展名 'doc' 会把 .docx
+        # 排除（类型=doc 已覆盖 docx/doc），造成过滤过窄。
+        def _redundant(low: str) -> bool:
+            return low in out.file_types
+
         m = _EXT_RE.search(text)
-        if m and m.group(1).lower() in _EXTENSIONS:
+        if m and m.group(1).lower() in _EXTENSIONS and not _redundant(m.group(1).lower()):
             out.extensions.append(m.group(1).lower())
             text = text.replace(m.group(0), " ", 1)
         # 独立扩展名 token；显式 ASCII 边界（Python \b 对 CJK 无效，见 _EXT_RE 注释）
         for tok in re.findall(r"[A-Za-z0-9]{2,10}", text):
             low = tok.lower()
-            if low in _EXTENSIONS and low not in out.extensions:
+            if low in _EXTENSIONS and low not in out.extensions and not _redundant(low):
                 out.extensions.append(low)
                 text = re.sub(rf"(?<![A-Za-z0-9]){re.escape(tok)}(?![A-Za-z0-9])", " ", text, count=1)
         return text

@@ -133,6 +133,7 @@ def test_b5_create_event_indexed(env, tmp_path):
     """关闭期 CREATE → 恢复后 files 有记录且可搜索。"""
     db, index, settings, files, fts = env
     root = tmp_path / "r"
+    root.mkdir(parents=True, exist_ok=True)
     settings.set(USN_CURSOR_KEY, {"D:\\": {"journal_id": 1, "usn": 100, "ts": 1}})
     created = _seed_disk_file(root, "新文件.txt", "关闭期新增内容")
     _seed_disk_file(root, "baseline.txt", "x")
@@ -161,6 +162,7 @@ def test_b6_modify_event_updates(env, tmp_path):
     """关闭期 MODIFY（EXTEND）→ mtime/size 更新。"""
     db, index, settings, files, _ = env
     root = tmp_path / "r"
+    root.mkdir(parents=True, exist_ok=True)
     settings.set(USN_CURSOR_KEY, {"D:\\": {"journal_id": 1, "usn": 100, "ts": 1}})
     p = _seed_disk_file(root, "m.txt", "old")
     files.upsert_batch([_meta(p)])
@@ -178,6 +180,7 @@ def test_b7_delete_event_excluded(env, tmp_path):
     """关闭期 DELETE → is_deleted=1（搜索排除）。"""
     db, index, settings, files, _ = env
     root = tmp_path / "r"
+    root.mkdir(parents=True, exist_ok=True)
     settings.set(USN_CURSOR_KEY, {"D:\\": {"journal_id": 1, "usn": 100, "ts": 1}})
     p = _seed_disk_file(root, "d.txt", "将被删除")
     files.upsert_batch([_meta(p)])
@@ -193,6 +196,7 @@ def test_b8_rename_event_keeps_file_id(env, tmp_path):
     """关闭期 RENAME → file_id 保留 + path 更新（MVP rename 规则）。"""
     db, index, settings, files, fts, = env
     root = tmp_path / "r"
+    root.mkdir(parents=True, exist_ok=True)
     settings.set(USN_CURSOR_KEY, {"D:\\": {"journal_id": 1, "usn": 100, "ts": 1}})
     src = _seed_disk_file(root, "old-name.txt", "内容")
     dst = root / "new-name.txt"
@@ -231,6 +235,7 @@ def test_c10_cursor_advances(env, tmp_path):
     """正常推进：处理后 cursor = 最后事件 usn。"""
     db, index, settings, files, _ = env
     root = tmp_path / "r"
+    root.mkdir(parents=True, exist_ok=True)
     _seed_active_root(settings, str(root))
     p = _seed_disk_file(root, "a.txt", "x")
     files.upsert_batch([_meta(p)])
@@ -245,6 +250,7 @@ def test_c11_cursor_interrupted_replay(env, tmp_path):
     """中断恢复：cursor 停在旧值 → 重启重放（幂等，不产生错误状态）。"""
     db, index, settings, files, _ = env
     root = tmp_path / "r"
+    root.mkdir(parents=True, exist_ok=True)
     _seed_active_root(settings, str(root))
     p = _seed_disk_file(root, "a.txt", "x")
     files.upsert_batch([_meta(p)])
@@ -279,6 +285,7 @@ def test_c12_journal_wrapped_fallback(env):
 def test_d13_active_root_events_processed(env, tmp_path):
     db, index, settings, files, _ = env
     root = tmp_path / "r"
+    root.mkdir(parents=True, exist_ok=True)
     settings.set(USN_CURSOR_KEY, {"D:\\": {"journal_id": 1, "usn": 100, "ts": 1}})
     p = _seed_disk_file(root, "in.txt", "x")
     files.upsert_batch([_meta(p)])
@@ -290,6 +297,7 @@ def test_d14_disabled_root_events_ignored(env, tmp_path):
     """disabled root（不在 active roots 参数）→ 事件丢弃。"""
     db, index, settings, files, _ = env
     root = tmp_path / "r"
+    root.mkdir(parents=True, exist_ok=True)
     settings.add_index_root(str(root), enabled=False)  # 禁用
     settings.set(USN_CURSOR_KEY, {"D:\\": {"journal_id": 1, "usn": 100, "ts": 1}})
     _seed_disk_file(root, "skip.txt", "x")  # 磁盘存在但未索引（基线外）
@@ -306,6 +314,7 @@ def test_d15_removed_root_events_ignored(env, tmp_path):
     """removed root（settings 已移除）→ 事件丢弃。"""
     db, index, settings, files, _ = env
     root = tmp_path / "r"
+    root.mkdir(parents=True, exist_ok=True)
     settings.set(USN_CURSOR_KEY, {"D:\\": {"journal_id": 1, "usn": 100, "ts": 1}})
     p = _seed_disk_file(root, "gone.txt", "x")
     files.upsert_batch([_meta(p)])  # 数据保留（移除语义）
@@ -344,6 +353,7 @@ def test_e17_crash_mid_processing_cursor_not_advanced(env, tmp_path):
     """处理中异常：run 返回 False，cursor 不推进（重启重放，不丢事件）。"""
     db, index, settings, files, _ = env
     root = tmp_path / "r"
+    root.mkdir(parents=True, exist_ok=True)
     _seed_active_root(settings, str(root))
     p = _seed_disk_file(root, "a.txt", "x")
     files.upsert_batch([_meta(p)])
@@ -363,6 +373,7 @@ def test_e18_restart_no_event_loss(env, tmp_path):
     """崩溃后重启：cursor 未推进 → 事件被补处理。"""
     db, index, settings, files, _ = env
     root = tmp_path / "r"
+    root.mkdir(parents=True, exist_ok=True)
     _seed_active_root(settings, str(root))
     p = _seed_disk_file(root, "a.txt", "x")
     files.upsert_batch([_meta(p)])
@@ -387,6 +398,7 @@ def test_f19_23_24_closed_period_changes_recovered(env, tmp_path):
     """集成：关闭期 CREATE+MODIFY+RENAME+DELETE → 启动恢复 → 搜索结果正确。"""
     db, index, settings, files, fts = env
     root = tmp_path / "r"
+    root.mkdir(parents=True, exist_ok=True)
     _seed_active_root(settings, str(root))
     # 基线（已索引）
     base = _seed_disk_file(root, "base.txt", "基线内容")
@@ -434,3 +446,129 @@ def test_f19_23_24_closed_period_changes_recovered(env, tmp_path):
             assert old_row["is_deleted"] == 1 or old_row["path"] == str(renamed_dst)  # 旧路径不残留活跃
         del_row = c.execute("SELECT is_deleted FROM files WHERE path=?", (str(deleted),)).fetchone()
         assert del_row and del_row["is_deleted"] == 1
+
+
+# ================= 批次 1 回归（U3/U4） =================
+
+def test_p21_rename_with_modify_preserved(env, tmp_path):
+    """U3 回归：关闭期「修改+重命名」→ 新路径行 is_deleted=0（文件不消失）。"""
+    db, index, settings, files, _ = env
+    root = tmp_path / "r"
+    root.mkdir(parents=True, exist_ok=True)
+    settings.add_index_root(str(root), enabled=True)
+    settings.set(USN_CURSOR_KEY, {"D:\\": {"journal_id": 1, "usn": 100, "ts": 1}})
+    from omnisearch.common.models import FileType
+    from omnisearch.server.repository.files import FileMeta
+
+    src = root / "a.txt"
+    src.write_text("v1", encoding="utf-8")
+    files.upsert_batch([FileMeta(path=str(src), filename="a.txt", dir_path=str(root), extension=".txt",
+                                 size_bytes=2, mtime_ns=1, ctime_ns=1, file_type=FileType.DOC, mime_type=None)])
+    dst = root / "b.txt"
+    dst.write_text("v2 修改后", encoding="utf-8")
+    src.unlink()
+    reader = FakeReader(
+        records=[
+            _rec(101, 1, 20, USN_REASON_EXTEND, "a.txt"),           # 修改（旧路径）
+            _rec(102, 1, 20, USN_REASON_RENAME_OLD_NAME, "a.txt"),   # rename old
+            _rec(103, 1, 20, USN_REASON_RENAME_NEW_NAME, "b.txt"),   # rename new
+        ],
+        dirs={20: str(root)},
+    )
+    svc = _svc(env, reader)
+    assert svc.run([str(root)]) is True
+    with db.connect() as c:
+        row = c.execute("SELECT id, is_deleted FROM files WHERE path=?", (str(dst),)).fetchone()
+        assert row is not None and row["is_deleted"] == 0  # 新路径不因 upsert 旧路径而被软删
+
+
+# ================= 批次 2 回归（U5/U7） =================
+
+class PerVolJournalReader(FakeReader):
+    """U5：按卷返回不同 journal（D 卷可用、E 卷不可用）。"""
+
+    def __init__(self, journals: dict):
+        super().__init__(fs="NTFS")
+        self._journals = journals
+
+    def volume_for(self, root: str) -> str:
+        return "D:\\" if root.startswith("D:") else "E:\\"
+
+    def query_journal(self, vol):
+        return self._journals.get(vol)
+
+
+def test_u5_only_failed_volume_falls_back(env):
+    """U5：卷级降级传导——只有失败卷的 root 需要增量扫描（成功卷不重复扫描）。"""
+    db, index, settings, _, _ = env
+    reader = PerVolJournalReader(
+        {"D:\\": SimpleNamespace(UsnJournalID=1, NextUsn=100, LowestValidUsn=0)}
+    )
+    svc = UsnRecoveryService(db, index, settings, reader)
+    assert svc.run(["D:\\a", "E:\\b"]) is True  # D 卷成功（E 卷失败）
+    assert svc.fallback_roots == ["E:\\b"]       # 仅 E 卷 root 需 fallback
+
+
+def test_u5_all_ok_no_fallback(env):
+    db, index, settings, _, _ = env
+    svc = UsnRecoveryService(db, index, settings, FakeReader())
+    assert svc.run(["D:\\root"]) is True
+    assert svc.fallback_roots == []
+
+
+def test_u7_unresolved_rename_new_does_not_delete(env, tmp_path):
+    """U7：RENAME_NEW 路径解析失败（root 内 rename 的瞬态）→ 不误删旧路径。"""
+    db, index, settings, files, _ = env
+    root = tmp_path / "r"
+    root.mkdir(parents=True, exist_ok=True)
+    settings.add_index_root(str(root), enabled=True)
+    settings.set(USN_CURSOR_KEY, {"D:\\": {"journal_id": 1, "usn": 100, "ts": 1}})
+    p = _seed_disk_file(root, "old.txt", "内容")
+    files.upsert_batch([_meta(p)])
+    fid = files.get_by_path(str(p))["id"]
+    # RENAME_OLD（父 FRN 20 可解析）；RENAME_NEW（父 FRN 30 不可解析 → 路径解析失败）
+    reader = FakeReader(
+        records=[
+            _rec(101, 30, 20, USN_REASON_RENAME_OLD_NAME, "old.txt"),
+            _rec(102, 30, 30, USN_REASON_RENAME_NEW_NAME, "new.txt"),
+        ],
+        dirs={20: str(root)},
+    )
+    svc = UsnRecoveryService(db, index, settings, reader)
+    assert svc.run([str(root)]) is True
+    with db.connect() as c:
+        row = c.execute("SELECT is_deleted FROM files WHERE id=?", (fid,)).fetchone()
+        assert row is not None and row["is_deleted"] == 0  # 旧路径未被误删（等后续扫描兜底）
+
+
+def test_p21_dir_rename_no_ghost_file(env, tmp_path):
+    """U4 回归：目录重命名（子文件 OLD/NEW 均解析到新路径）→ src==dst 丢弃，不新建错误 file_id。"""
+    db, index, settings, files, _ = env
+    root = tmp_path / "r"
+    root.mkdir(parents=True, exist_ok=True)
+    settings.add_index_root(str(root), enabled=True)
+    settings.set(USN_CURSOR_KEY, {"D:\\": {"journal_id": 1, "usn": 100, "ts": 1}})
+    from omnisearch.common.models import FileType
+    from omnisearch.server.repository.files import FileMeta
+
+    f = root / "f.txt"
+    f.write_text("内容", encoding="utf-8")
+    files.upsert_batch([FileMeta(path=str(f), filename="f.txt", dir_path=str(root), extension=".txt",
+                                 size_bytes=2, mtime_ns=1, ctime_ns=1, file_type=FileType.DOC, mime_type=None)])
+    with db.connect() as c:
+        fid = c.execute("SELECT id FROM files WHERE path=?", (str(f),)).fetchone()["id"]
+        c.commit()
+    # 目录重命名：子文件两条记录都解析到「新目录」下的同一路径（历史名无法从 MFT 重建）
+    new_dir_path = str(root / "newdir")
+    reader = FakeReader(
+        records=[
+            _rec(101, 10, 30, USN_REASON_RENAME_OLD_NAME, "f.txt"),
+            _rec(102, 10, 30, USN_REASON_RENAME_NEW_NAME, "f.txt"),
+        ],
+        dirs={30: new_dir_path},  # 两条记录都指向新目录
+    )
+    svc = _svc(env, reader)
+    assert svc.run([str(root)]) is True
+    with db.connect() as c:
+        n = c.execute("SELECT count(*) n FROM files WHERE id=?", (fid,)).fetchone()["n"]
+        assert n == 1  # 原 file_id 保留（未因 src==dst rename 被误删/新建）

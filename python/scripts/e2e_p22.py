@@ -19,7 +19,7 @@ import sys
 import time
 from pathlib import Path
 
-from e2e_http import get, post, wait_idle
+from e2e_http import base_url, get, post, read_ports, wait_idle
 
 E2E_ROOT = "p2-hash-test"
 
@@ -49,17 +49,18 @@ def _query(db_path: Path, sql: str, params=()):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", default="http://127.0.0.1:8734")
+    ap.add_argument("--url", default=None, help="默认读取 dev.py 落盘端口（.omnisearch-ports.json）")
     ap.add_argument("--token", default="")
     ap.add_argument("--root", default="dev-data")
     args = ap.parse_args()
+    args.url = args.url or base_url(args.root)  # T5：端口顺延后仍指向真实 FastAPI
 
     data_dir = Path(args.root).resolve()
     root = data_dir / E2E_ROOT
     root.mkdir(parents=True, exist_ok=True)
     db_path = data_dir / "db" / "omnisearch.db"
-    # Qdrant 端口遵循顺延规则（Main 注入 OMNISEARCH_QDRANT_HTTP_PORT），E2E 不得硬编码 6333
-    qdrant_port = os.environ.get("OMNISEARCH_QDRANT_HTTP_PORT", "6333")
+    # T5：Qdrant 端口遵循顺延规则——优先 dev.py 落盘端口文件，其次 env，最后 6333
+    qdrant_port = os.environ.get("OMNISEARCH_QDRANT_HTTP_PORT") or read_ports(args.root).get("qdrant_http") or "6333"
 
     # ---- 阶段 1：初次扫描 + AI 完成 ----
     (root / "original.txt").write_text("机器学习与深度学习的关系", encoding="utf-8")

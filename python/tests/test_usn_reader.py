@@ -89,33 +89,29 @@ def test_parse_truncated_and_garbage_safe():
 
 
 def test_file_name_attribute_parsing():
-    """MFT 记录 $FILE_NAME 解析（UsnReader._read_file_name 的核心偏移逻辑）。"""
-    from omnisearch.server.service.usn import UsnReader
+    """MFT 记录 $FILE_NAME 解析——直接测试生产纯函数 parse_file_name_attr。
 
-    reader = UsnReader()  # 仅用其静态解析路径（不触碰 Windows API）
-
-    def parse(data: bytes):
-        # 复刻 _read_file_name 的解析段（输入为 MFT 记录字节）
-        first_attr = struct.unpack_from("<H", data, 20)[0]
-        off = first_attr
-        while off + 16 <= len(data):
-            attr_type = struct.unpack_from("<I", data, off)[0]
-            attr_len = struct.unpack_from("<I", data, off + 4)[0]
-            if attr_len < 24 or off + attr_len > len(data):
-                break
-            if attr_type == 0x30:
-                value_len = struct.unpack_from("<I", data, off + 16)[0]
-                value_off = struct.unpack_from("<H", data, off + 20)[0]
-                v = off + value_off
-                if value_len >= 66 and v + value_len <= len(data):
-                    parent = struct.unpack_from("<Q", data, v)[0]
-                    name_len = data[v + 64]
-                    name = data[v + 66 : v + 66 + name_len * 2].decode("utf-16-le")
-                    return name, parent
-                return None, None
-            off += attr_len
-        return None, None
+    审查修正（U1/T6）：原测试复刻解析段（生产偏移错误时照样绿）；
+    现构造真实 NTFS_FILE_RECORD_OUTPUT_BUFFER（记录起点偏移 12）并调用真实函数。
+    """
+    from omnisearch.server.service.usn import parse_file_name_attr
 
     record = _make_file_record("子目录", 0xABCD)
-    name, parent = parse(record)
+    name, parent = parse_file_name_attr(record)
     assert name == "子目录" and parent == 0xABCD
+
+
+def test_file_record_output_buffer_offset_12():
+    """U1 回归：NTFS_FILE_RECORD_OUTPUT_BUFFER 中 MFT 记录起点 = 偏移 12（非 16）。
+
+    若生产切片偏移错误（16），'FILE' 魔数匹配失败 → parse 返回 None —— 该测试锁定偏移。
+    """
+    from omnisearch.server.service.usn import parse_file_name_attr
+
+    record = _make_file_record("locked.txt", 0x1234)
+    # 构造完整输出缓冲：FileReferenceNumber(8) + FileRecordLength(4) + FileRecordBuffer@12
+    buf = b"\x00" * 8 + struct.pack("<I", len(record)) + record
+    # 偏移 16 的错误切片会破坏 'FILE' 魔数（读取到 UsaOffset/UsaCount）
+    assert buf[16:20] != b"FILE"  # 16 处是记录内字段，非魔数
+    name, parent = parse_file_name_attr(buf[12 : 12 + len(record)])  # 正确偏移 12
+    assert name == "locked.txt" and parent == 0x1234

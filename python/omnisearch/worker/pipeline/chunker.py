@@ -48,6 +48,14 @@ def chunk_text(text: str, max_tokens: int = MAX_TOKENS, overlap: int = OVERLAP_T
         sentences = _split_by_sentences(paragraph)
         current = ""
         for sentence in sentences:
+            if estimate_tokens(sentence) > max_tokens:
+                # 超长单句（无句内边界，如长 URL/日志/无标点中文）：字符窗口硬切（W3 修正）
+                if current.strip():
+                    chunks.append(current.strip())
+                    current = ""
+                for piece in _hard_split(sentence, max_tokens, overlap):
+                    chunks.append(piece)
+                continue
             if current and estimate_tokens(current + sentence) > max_tokens:
                 chunks.append(current.strip())
                 current = current[-overlap:] + sentence  # 重叠 32 token（近似字符重叠）
@@ -56,3 +64,29 @@ def chunk_text(text: str, max_tokens: int = MAX_TOKENS, overlap: int = OVERLAP_T
         if current.strip():
             chunks.append(current.strip())
     return [c for c in chunks if c.strip()]
+
+
+def _hard_split(text: str, max_tokens: int, overlap: int) -> list[str]:
+    """字符窗口硬切（W3）：无标点边界的超长文本按 token 上限切分，相邻窗口重叠。
+
+    窗口 = max_tokens 字符（中文 1 字 ≈ 1 token 近似；英文整词不回退导致超限时
+    按窗口截断——无空格超长串（URL/哈希）本来无词边界可循）。
+    """
+    pieces: list[str] = []
+    window = max_tokens
+    start = 0
+    while start < len(text):
+        end = min(start + window, len(text))
+        piece = text[start:end]
+        if end < len(text):
+            # 非末尾：尽量回退到空格避免截断词（回退不少于一半窗口）
+            space = piece.rfind(" ")
+            if space >= window // 2:
+                end = start + space
+                piece = text[start:end]
+            pieces.append(piece)
+            start = end - overlap if end - overlap > start else end
+        else:
+            pieces.append(piece)
+            break
+    return pieces

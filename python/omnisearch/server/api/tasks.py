@@ -36,8 +36,10 @@ def failed() -> list[FailedTaskItem]:
 def retry(task_id: int) -> TaskRetryResponse:
     assert _TASKS is not None
     result = _TASKS.retry(task_id)
-    if result in ("MAX_ATTEMPTS_EXCEEDED", "TASK_NOT_FOUND"):
-        raise HTTPException(status_code=409, detail=result)
+    if result == "TASK_NOT_FOUND":
+        raise HTTPException(status_code=404, detail=result)
+    # E4：MAX_ATTEMPTS_EXCEEDED 是「业务状态」而非传输错误——按契约返回 200 + {status}，
+    # 前端 retry() 才能拿到 status 并提示（原 409 抛异常 → 用户点重试零反馈）。
     return TaskRetryResponse(status=result)
 
 

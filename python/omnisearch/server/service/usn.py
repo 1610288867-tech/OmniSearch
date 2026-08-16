@@ -232,18 +232,21 @@ class UsnReader:
         return parent.rstrip("\\") + "\\" + filename
 
     def _resolve_dir(self, vol: str, frn: int) -> str | None:
-        if frn in self._path_cache:
-            return self._path_cache[frn]
+        # 缓存键含卷维度：FRN 编号空间按卷独立（多 NTFS 卷同 FRN 指向不同目录，U2 修正）
+        key = (vol, frn)
+        if key in self._path_cache:
+            return self._path_cache[key]
         if frn == ROOT_FRN:
-            self._path_cache[frn] = vol
+            self._path_cache[key] = vol
             return vol
         parts: list[str] = []
         seen: set[int] = set()
         current = frn
         while current != ROOT_FRN and current not in seen and len(parts) < MAX_PATH_DEPTH:
             seen.add(current)
-            if current in self._path_cache:
-                base = self._path_cache[current]
+            ckey = (vol, current)
+            if ckey in self._path_cache:
+                base = self._path_cache[ckey]
                 return base.rstrip("\\") + ("\\" + "\\".join(reversed(parts)) if parts else "")
             name, parent = self._read_file_name(vol, current)
             if name is None:
@@ -253,7 +256,7 @@ class UsnReader:
         if current != ROOT_FRN:
             return None  # 环/超深
         full = vol.rstrip("\\") + "\\" + "\\".join(reversed(parts))
-        self._path_cache[frn] = full
+        self._path_cache[key] = full
         return full
 
     def _read_file_name(self, vol: str, frn: int) -> tuple[str | None, int | None]:
@@ -275,29 +278,41 @@ class UsnReader:
         )
         if not ok:
             return None, None
-        # 输出缓冲：NTFS_FILE_RECORD_OUTPUT_BUFFER {FileReferenceNumber(8), FileNameLength(4), FileName[]}
-        data = buf.raw[16 : 16 + struct.unpack_from("<I", buf.raw, 8)[0]]
-        if len(data) < 24 or data[:4] != b"FILE":
-            return None, None
-        first_attr = struct.unpack_from("<H", data, 20)[0]
-        off = first_attr
-        while off + 16 <= len(data):
-            attr_type = struct.unpack_from("<I", data, off)[0]
-            attr_len = struct.unpack_from("<I", data, off + 4)[0]
-            if attr_len < 24 or off + attr_len > len(data):
-                break
-            if attr_type == 0x30:  # $FILE_NAME（驻留）
-                value_len = struct.unpack_from("<I", data, off + 16)[0]
-                value_off = struct.unpack_from("<H", data, off + 20)[0]
-                v = off + value_off
-                if value_len >= 66 and v + value_len <= len(data):
-                    parent = struct.unpack_from("<Q", data, v)[0]
-                    name_len = data[v + 64]
-                    name = data[v + 66 : v + 66 + name_len * 2].decode("utf-16-le", errors="replace")
-                    return name, parent
-                return None, None
-            off += attr_len
+        # 输出缓冲：NTFS_FILE_RECORD_OUTPUT_BUFFER = {LARGE_INTEGER FileReferenceNumber@0(8),
+        # ULONG FileRecordLength@8(4), BYTE FileRecordBuffer[1]@12} —— MFT 记录从偏移 12 开始
+        # （MSDN winioctl.h；偏移 16 会导致 'FILE' 魔数永远不匹配 → 解析恒失败）
+        record_len = struct.unpack_from("<I", buf.raw, 8)[0]
+        data = buf.raw[12 : 12 + record_len]
+        return parse_file_name_attr(data)
+
+
+def parse_file_name_attr(data: bytes) -> tuple[str | None, int | None]:
+    """解析 MFT 记录（FSCTL_GET_NTFS_FILE_RECORD 的 FileRecordBuffer）的 $FILE_NAME 属性。
+
+    纯函数（可单测）：遍历驻留属性找 TypeCode=0x30 → (文件名, 父 FRN)；失败 → (None, None)。
+    不处理更新序列（USA 只影响 sector 尾 2 字节，$FILE_NAME 不跨 sector 边界即可安全忽略）。
+    """
+    if len(data) < 24 or data[:4] != b"FILE":
         return None, None
+    first_attr = struct.unpack_from("<H", data, 20)[0]
+    off = first_attr
+    while off + 16 <= len(data):
+        attr_type = struct.unpack_from("<I", data, off)[0]
+        attr_len = struct.unpack_from("<I", data, off + 4)[0]
+        if attr_len < 24 or off + attr_len > len(data):
+            break
+        if attr_type == 0x30:  # $FILE_NAME（驻留）
+            value_len = struct.unpack_from("<I", data, off + 16)[0]
+            value_off = struct.unpack_from("<H", data, off + 20)[0]
+            v = off + value_off
+            if value_len >= 66 and v + value_len <= len(data):
+                parent = struct.unpack_from("<Q", data, v)[0]
+                name_len = data[v + 64]
+                name = data[v + 66 : v + 66 + name_len * 2].decode("utf-16-le", errors="replace")
+                return name, parent
+            return None, None
+        off += attr_len
+    return None, None
 
     # ---------------- 句柄管理 ----------------
 

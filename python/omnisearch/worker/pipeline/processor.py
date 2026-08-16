@@ -14,6 +14,7 @@ P2.2 content_hash AI 结果复用（ADR-007）：
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from omnisearch.common.database import Database
@@ -278,6 +279,22 @@ def _reembed_file(
     logger.info("re-embedded file=%d chunks=%d (Qdrant 补齐)", file_id, len(chunks))
 
 
+def _reject_if_changed_during(path: str, hash_value: str, st0) -> None:
+    """S7：处理期间文件内容变化 → 本次 AI 结果可能陈旧，拒绝（抛异常 → task FAILED，重试重新处理）。
+
+    正常文件零 I/O 负担：仅一次 stat 对比 size/mtime；只有变化时才重算 content_hash。
+    变化但 hash 相同（touch/内容未变）→ 接受（索引内容即当前内容）。
+    """
+    try:
+        st1 = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return  # 文件已消失：删除事件兜底，无需拒绝
+    if st0.st_size == st1.st_size and st0.st_mtime_ns == st1.st_mtime_ns:
+        return
+    if content_hash_xxh3(path) != hash_value:
+        raise ValueError(f"file changed during AI processing (stale index prevented): {path}")
+
+
 def _ensure_exif(db: Database, file_id: int, path: str) -> None:
     """提取并写入新文件自身的 EXIF（clone/same_file 路径也执行——EXIF 不是被复制的 metadata，
     而是新路径文件的独立属性；缺失则精确时间过滤会误排除副本）。"""
@@ -317,6 +334,7 @@ def process_doc_file(
     if _try_reuse(db, file_id, hash_value, embedder, vector_store, "file"):
         return
 
+    st0 = os.stat(path, follow_symlinks=False)  # S7：处理前快照（期间内容变化 → 拒绝陈旧结果）
     text = extract_text(path)  # 事务外（架构 §11.5）
     chunks = chunk_text(text)  # 事务外
     prepared = [(c, seg_text(c), estimate_tokens(c)) for c in chunks]
@@ -347,6 +365,7 @@ def process_doc_file(
         conn.close()
 
     _embed_file_chunks(db, file_id, embedder, vector_store)
+    _reject_if_changed_during(path, hash_value, st0)
 
 
 def process_image_file(
@@ -374,6 +393,7 @@ def process_image_file(
         _ensure_exif(db, file_id, path)  # 复用路径补 EXIF（same_file/clone 均幂等）
         return
 
+    st0 = os.stat(path, follow_symlinks=False)  # S7：处理前快照（期间内容变化 → 拒绝陈旧结果）
     result = ocr_image(path)  # 事务外（架构 §11.5；失败抛 OcrError → task FAILED）
     caption = caption_provider.caption(Path(path)) if caption_provider is not None else None
     exif = extract_exif(path)  # 事务外；时间过滤 exact 语义（M5，§12.7）
@@ -434,6 +454,7 @@ def process_image_file(
         conn.close()
 
     _embed_file_chunks(db, file_id, embedder, vector_store)
+    _reject_if_changed_during(path, hash_value, st0)
 
 
 def _embed_file_chunks(

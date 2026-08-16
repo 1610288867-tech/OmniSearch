@@ -97,3 +97,49 @@ def test_fts_files_only_via_repository(db):
 
     FtsRepository(db).insert(ops[0].file_id, ops[0].filename, ops[0].filename_seg, ops[0].dir_tokens)
     assert FtsRepository(db).match("onlyrepo")
+
+
+def test_contentless_delete_mode_reads_ddl(db):
+    """S6：contentless-delete 判定按实际表定义（不是运行时版本常量——防换机/升级漂移）。"""
+    from omnisearch.server.repository.fts import FtsRepository
+
+    fts = FtsRepository(db)
+    with db.connect() as c:
+        sql = c.execute("SELECT sql FROM sqlite_master WHERE name='fts_files'").fetchone()[0]
+        assert fts._is_contentless_delete(c) == ("contentless_delete=1" in sql)
+    # 漂移场景：即便运行时 sqlite 是新版，plain contentless 表也必须判为 False（走 special delete）
+    with db.connect() as c:
+        c.execute("DROP TABLE fts_files")
+        c.execute("""CREATE VIRTUAL TABLE fts_files USING fts5(
+            filename, filename_seg, dir_tokens, contentless, tokenize='unicode61')""")
+    fts2 = FtsRepository(db)
+    with db.connect() as c:
+        assert fts2._is_contentless_delete(c) is False
+    fts2.delete(1)  # special delete 分支不抛错（幂等）
+
+
+def test_case_insensitive_upsert_no_duplicate(db):
+    """S5：NTFS 大小写 rename —— 新大小写路径 upsert 命中既有行（同 file_id，无重复活跃行）。"""
+    import platform
+
+    files = FileRepository(db)
+    ops = files.upsert_batch([_meta("/x/Foo.txt")])
+    fid = ops[0].file_id
+    ops2 = files.upsert_batch([_meta("/x/foo.txt")])
+    if platform.system() != "Windows":
+        # 非 Windows（大小写敏感 FS）：是两个独立文件
+        assert len(ops2) == 1 and ops2[0].file_id != fid
+        return
+    # Windows：命中既有行 → replace（filename 大小写变化），不新建 file_id
+    # 注：normalize() 会把正斜杠路径转成反斜杠（\\x\\...），断言用同一规范化形式
+    from omnisearch.common.utils.paths import normalize
+
+    assert len(ops2) == 1 and ops2[0].file_id == fid and ops2[0].filename == "foo.txt"
+    with db.connect() as c:
+        rows = c.execute(
+            "SELECT id FROM files WHERE path=? AND is_deleted=0", (normalize("/x/foo.txt"),)
+        ).fetchall()
+        assert len(rows) == 1 and rows[0]["id"] == fid  # 无重复活跃行
+        assert c.execute(
+            "SELECT count(*) n FROM files WHERE path=? AND is_deleted=0", (normalize("/x/Foo.txt"),)
+        ).fetchone()["n"] == 0

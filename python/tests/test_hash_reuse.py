@@ -193,6 +193,27 @@ def test_b6_modified_content_reprocesses(env, tmp_path, monkeypatch):
         assert "v2" in row["chunk_text"]
 
 
+def test_s7_content_changed_during_processing_rejected(env, tmp_path, monkeypatch):
+    """S7：处理期间内容变化 → 拒绝陈旧结果（抛 ValueError → task FAILED，重试重新处理）。
+
+    正常文件零 I/O 负担（一次 stat 对比）；只有 stat 变化才重算 hash 拒绝。
+    """
+    db, vs, add_file = env
+    p = tmp_path / "doc.txt"
+    p.write_text("原始内容 v1", encoding="utf-8")
+    fid = add_file(str(p))
+    orig = processor.extract_text
+
+    def changing_extract(path):
+        text = orig(path)
+        p.write_text("覆盖后的完全不同内容", encoding="utf-8")  # 处理中途被覆盖（size 也变）
+        return text
+
+    monkeypatch.setattr(processor, "extract_text", changing_extract)
+    with pytest.raises(ValueError, match="changed during AI processing"):
+        process_doc_file(db, fid, str(p), embedder=FakeEmbedder(), vector_store=vs)
+
+
 # ================= C. Rename =================
 
 def test_c7_rename_preserves_ai_results(env, tmp_path):

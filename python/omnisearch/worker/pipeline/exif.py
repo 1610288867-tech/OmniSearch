@@ -33,5 +33,7 @@ def extract_exif(path: str) -> dict | None:
             logger.warning("unparseable exif datetime: %r (%s)", dt, Path(path).name)
             return None
         return {"datetime_original": str(dt), "datetime_original_epoch": epoch}
-    except Exception:  # noqa: BLE001 —— 图片损坏/无 EXIF → None（OCR/Caption 仍继续）
+    except Exception as exc:  # noqa: BLE001 —— 图片损坏/无 EXIF → None（OCR/Caption 仍继续）
+        # W5：异常必须留痕——静默吞掉会掩盖「字段误用/EXIF 解析器行为变化」等真实问题
+        logger.warning("exif extract failed for %s: %s", path, exc, exc_info=True)
         return None

@@ -111,3 +111,49 @@ def test_duplicate_enqueue_rejected(db: Database):
         except sqlite3.IntegrityError:
             raised = True
     assert raised, "第二个 PENDING 任务应被 partial unique index 拒绝"
+
+
+# ================= W1/W2 回归（批次 1 审查修复） =================
+
+def test_claim_increments_attempt(db, tmp_path):
+    """W1：claim 时 attempt 递增（MAX_ATTEMPTS_EXCEEDED 可达）。"""
+    from omnisearch.common.models import TaskStatus
+    from omnisearch.server.repository.tasks import TaskRepository
+
+    with db.connect() as c:
+        cur = c.execute(
+            """INSERT INTO files (path, filename, dir_path, extension, mtime_ns, ctime_ns, file_type)
+               VALUES (?, 'a.txt', '/x', '.txt', 1, 1, 'doc')""",
+            (str(tmp_path / "a.txt"),),
+        )
+        fid = cur.lastrowid
+        c.commit()
+    TaskRepository(db).enqueue([fid])
+    q = TaskQueue(db)
+    q.claim_batch()
+    q.claim_batch()  # RUNNING 不可再领（0）
+    with db.connect() as c:
+        row = c.execute("SELECT attempt, status FROM ai_tasks WHERE file_id=?", (fid,)).fetchone()
+        assert row["attempt"] == 1 and row["status"] == TaskStatus.RUNNING.value
+
+
+def test_recover_interrupted(db, tmp_path):
+    """W2：崩溃遗留 RUNNING → 启动复位 PENDING。"""
+    from omnisearch.common.models import TaskStatus
+    from omnisearch.server.repository.tasks import TaskRepository
+
+    with db.connect() as c:
+        cur = c.execute(
+            """INSERT INTO files (path, filename, dir_path, extension, mtime_ns, ctime_ns, file_type)
+               VALUES (?, 'b.txt', '/x', '.txt', 1, 1, 'doc')""",
+            (str(tmp_path / "b.txt"),),
+        )
+        fid = cur.lastrowid
+        c.commit()
+    TaskRepository(db).enqueue([fid])
+    q = TaskQueue(db)
+    q.claim_batch()  # RUNNING（模拟崩溃遗留）
+    assert q.recover_interrupted() == 1
+    with db.connect() as c:
+        assert c.execute("SELECT status FROM ai_tasks WHERE file_id=?", (fid,)).fetchone()["status"] == TaskStatus.PENDING.value
+    assert q.recover_interrupted() == 0  # 幂等

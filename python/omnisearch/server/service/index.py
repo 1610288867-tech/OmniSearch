@@ -78,6 +78,11 @@ class IndexService:
         """
         try:
             result = self._scan_tree(root, job_id)
+            if result.total < 0:  # S1：writer 写入失败 → job FAILED（旧数据保留，不执行删除同步）
+                logger.error("scan aborted root=%s job=%d (write failure)", root, job_id)
+                self._jobs.update_cursor(job_id, None)
+                self._jobs.finish(job_id, JobStatus.FAILED.value, 0)
+                return
             # 删除同步：库中活跃但磁盘已消失的 path → 软删除 + FTS cleanup
             self._sync_deleted(root)
             self._jobs.update_cursor(job_id, None)  # 完成：清断点
@@ -93,6 +98,16 @@ class IndexService:
         write_q: queue.Queue = queue.Queue(maxsize=SCAN_QUEUE_SIZE)
         stop = threading.Event()
         scanned_total: list[int] = [0]  # writer 线程汇总
+
+        def _put(q: queue.Queue, item) -> bool:
+            """带 stop 感知的入队（S1：writer 异常中止后队列不再被消费，put 不得永久阻塞）。"""
+            while not stop.is_set():
+                try:
+                    q.put(item, timeout=1.0)
+                    return True
+                except queue.Full:
+                    continue
+            return False
 
         def producer() -> None:
             """有序 DFS（显式栈），产出待 stat 的文件路径。
@@ -124,13 +139,16 @@ class IndexService:
                                     stack.append(Path(entry.path))
                             elif entry.is_file(follow_symlinks=False):
                                 ext = Path(entry.name).suffix.lower()
-                                if not should_skip_extension(ext):
-                                    scan_q.put(entry.path)
+                                if not should_skip_extension(ext) and not _put(scan_q, entry.path):
+                                    break
                         except OSError:
                             continue
             finally:
                 for _ in range(SCAN_WORKERS):
-                    scan_q.put(_SENTINEL)
+                    try:
+                        scan_q.put(_SENTINEL, timeout=1.0)
+                    except queue.Full:
+                        break
 
         def worker() -> None:
             """stat + 元数据提取（不跟随符号链接）。"""
@@ -138,13 +156,14 @@ class IndexService:
                 p = scan_q.get()
                 if p is _SENTINEL:
                     scan_q.task_done()
-                    write_q.put(_SENTINEL)
+                    _put(write_q, _SENTINEL)
                     return
                 try:
                     st = os.stat(p, follow_symlinks=False)
                     path = str(Path(p))
                     filename = Path(p).name
-                    write_q.put(
+                    if not _put(
+                        write_q,
                         FileMeta(
                             path=path,
                             filename=filename,
@@ -155,18 +174,24 @@ class IndexService:
                             ctime_ns=st.st_ctime_ns,
                             file_type=file_type_for(Path(filename).suffix),
                             mime_type=mime_type_for(filename),
-                        )
-                    )
+                        ),
+                    ):
+                        return  # stop：writer 已中止
                 except OSError as exc:
                     logger.warning("stat failed %s: %s", p, exc)
                 finally:
                     scan_q.task_done()
 
         def writer() -> None:
-            """批量写：每 1000 行一个短事务（files + fts_files 原子）；汇总进度。"""
+            """批量写：每 1000 行一个短事务（files + fts_files 原子）；汇总进度。
+
+            S1 修正：写入异常（SQLITE_BUSY/磁盘满）不得杀死 writer 线程——
+            否则队列链式阻塞导致扫描永久挂起；改为记录错误并中止（job 由 run_scan 置 FAILED）。
+            """
             seen_sentinels = 0
             batch: list[FileMeta] = []
             scanned = 0
+            failed = False
             while seen_sentinels < SCAN_WORKERS:
                 item = write_q.get()
                 if item is _SENTINEL:
@@ -176,13 +201,28 @@ class IndexService:
                 batch.append(item)
                 write_q.task_done()
                 if len(batch) >= WRITE_BATCH:
-                    self._flush_batch(batch, priority=1)  # 批量扫描：低优先级
+                    try:
+                        self._flush_batch(batch, priority=1)  # 批量扫描：低优先级
+                    except Exception:
+                        logger.exception("scan write failed at %d files (job=%d) → aborting scan", scanned, job_id)
+                        failed = True
+                        break
                     scanned += len(batch)
                     batch = []
                     if scanned % PROGRESS_EVERY < WRITE_BATCH:
                         self._jobs.update_progress(job_id, scanned)
+            if failed:
+                stop.set()  # 通知 producer/worker 停止投递（防队列阻塞）
+                scanned_total[0] = -1  # 标记失败（run_scan 识别）
+                return
             if batch:
-                self._flush_batch(batch, priority=1)
+                try:
+                    self._flush_batch(batch, priority=1)
+                except Exception:
+                    logger.exception("scan write failed (tail batch, job=%d) → aborting scan", job_id)
+                    stop.set()
+                    scanned_total[0] = -1
+                    return
                 scanned += len(batch)
             self._jobs.update_progress(job_id, scanned)
             scanned_total[0] = scanned
@@ -324,12 +364,15 @@ class IndexService:
         # 目标不存在：保留 file_id/chunks 等，仅更新 path/filename/dir_path + fts replace
         new_filename = Path(dst).name
         new_dir = normalize(str(Path(dst).parent))
+        new_ext = Path(new_filename).suffix.lower()
         conn = self._db.connect()
         try:
             conn.execute("BEGIN")
             conn.execute(
-                "UPDATE files SET path=?, filename=?, dir_path=?, updated_at=unixepoch() WHERE id=?",
-                (dst, new_filename, new_dir, src_row["id"]),
+                """UPDATE files SET path=?, filename=?, dir_path=?, extension=?, file_type=?,
+                                    mime_type=?, updated_at=unixepoch() WHERE id=?""",
+                (dst, new_filename, new_dir, new_ext,
+                 file_type_for(new_ext).value, mime_type_for(new_filename), src_row["id"]),
             )
             self._fts.replace(
                 src_row["id"],

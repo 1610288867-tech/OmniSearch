@@ -9,13 +9,32 @@ from __future__ import annotations
 import sqlite3
 
 from omnisearch.common.database import Database
-
-_IS_CONTENTLESS_DELETE = sqlite3.sqlite_version_info >= (3, 43)
+from omnisearch.server.repository.files import FileRepository
 
 
 class FtsRepository:
     def __init__(self, db: Database):
         self._db = db
+        self._contentless_delete: bool | None = None
+
+    def _is_contentless_delete(self, c) -> bool:
+        """contentless-delete 模式判定（S6：按「实际表定义」而非「当前运行时版本」）。
+
+        原实现用模块级常量 `sqlite3.sqlite_version_info >= (3, 43)`——但表是**建库时**
+        按当时版本创建并持久化的；DB 换机器/升级 Python 后运行时版本可能与建表时不同，
+        判定漂移会让 contentless（非 contentless_delete）表被误用普通 DELETE → FTS5 报错。
+        现从 sqlite_master 读取实际 DDL；表不存在（迁移前）才回退运行时版本判定。
+        """
+        if self._contentless_delete is None:
+            row = c.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='fts_files'"
+            ).fetchone()
+            sql = row[0] if row else ""
+            if sql:
+                self._contentless_delete = "contentless_delete=1" in sql
+            else:
+                self._contentless_delete = sqlite3.sqlite_version_info >= (3, 43)
+        return self._contentless_delete
 
     # ---------------- 写入（唯一入口） ----------------
 
@@ -40,18 +59,23 @@ class FtsRepository:
         own = conn is None
         c = conn or self._db.connect()
         try:
-            if _IS_CONTENTLESS_DELETE:
+            if self._is_contentless_delete(c):
                 c.execute("DELETE FROM fts_files WHERE rowid=?", (file_id,))
             else:
-                # 普通 contentless：必须用 FTS5 special delete command（需原始列值，取自 files 主表）
+                # 普通 contentless：必须用 FTS5 special delete command（需原始列值）。
+                # files 主表只存 filename/dir_path，filename_seg/dir_tokens 需按与写入时
+                # 相同的规则重算（files._seg/_dir_tokens）——原查询直接取 files.filename_seg
+                # 列（该列不存在）→ 旧版 sqlite 兜底路径实际会崩（S6 回归发现）。
                 row = c.execute(
-                    "SELECT filename, filename_seg, dir_tokens FROM files WHERE id=?", (file_id,)
+                    "SELECT filename, dir_path FROM files WHERE id=?", (file_id,)
                 ).fetchone()
                 if row:
+                    fname = row["filename"] or ""
+                    dtokens = FileRepository._dir_tokens(row["dir_path"] or "")
                     c.execute(
                         """INSERT INTO fts_files(fts_files, rowid, filename, filename_seg, dir_tokens)
                            VALUES('delete', ?, ?, ?, ?)""",
-                        (file_id, row["filename"], row["filename_seg"] or "", row["dir_tokens"] or ""),
+                        (file_id, fname, FileRepository._seg(fname), dtokens),
                     )
             if own:
                 c.commit()
@@ -64,7 +88,7 @@ class FtsRepository:
         own = conn is None
         c = conn or self._db.connect()
         try:
-            if _IS_CONTENTLESS_DELETE:
+            if self._is_contentless_delete(c):
                 c.execute(
                     "UPDATE fts_files SET filename=?, filename_seg=?, dir_tokens=? WHERE rowid=?",
                     (filename, filename_seg, dir_tokens, file_id),

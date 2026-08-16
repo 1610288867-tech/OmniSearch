@@ -90,6 +90,14 @@ def main() -> None:
     fastapi_port = find_free_port(FASTAPI_PORT)
     qdrant_http, qdrant_grpc = find_free_port_pair(QDRANT_HTTP_PORT, QDRANT_GRPC_PORT)
     print(f"[dev] ports: fastapi={fastapi_port} qdrant_http={qdrant_http} qdrant_grpc={qdrant_grpc}", flush=True)
+    # T5：实际端口落盘供 e2e 脚本读取（8734/6333 被占用时顺延，e2e 不得硬编码）。
+    # 写入早于进程启动，e2e 轮询该文件即可拿到真实地址。
+    import json as _json
+
+    (data_dir / ".omnisearch-ports.json").write_text(
+        _json.dumps({"fastapi": fastapi_port, "qdrant_http": qdrant_http, "qdrant_grpc": qdrant_grpc}),
+        encoding="utf-8",
+    )
 
     procs: list[subprocess.Popen] = []
 

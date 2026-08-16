@@ -92,6 +92,15 @@ def test_extension():
     assert x2.extensions == ["docx"]
 
 
+def test_doc_extension_not_doubled_with_type():
+    """H5：'doc' 同时命中类型词与扩展名 → 只保留 file_types=doc（不再 AND 扩展名 'doc'，
+    否则 .docx 被排除、过滤过窄）。"""
+    for q in ("doc文档", "文档 doc"):
+        x = _parse(q)
+        assert x.file_types == ["doc"], q
+        assert x.extensions == [], q  # 扩展名 doc 与类型 doc 等价 → 不重复叠加
+
+
 def test_simple_keywords():
     x = _parse("机器学习架构")
     # 停用词过滤经 jieba 分词（中文无词边界，'的' 需切分后识别）→ semantic_text 为分词文本

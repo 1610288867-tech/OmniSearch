@@ -52,9 +52,18 @@ def test_add_folder_and_list(client, tmp_path):
     assert listing["roots"][0]["file_count"] == 1  # 已索引 1 个文件
 
 
-def test_add_drive_root(client):
+def test_add_drive_root(client, monkeypatch):
+    """盘符根添加：规范化保留尾部斜杠。
+
+    T2 修正：roots/add 会触发后台 full scan——对真实盘符（C:\\）做全盘 DFS 会
+    挂起测试并污染 DB；monkeypatch 掉扫描执行（只验证校验与持久化路径）。
+    """
+    from omnisearch.server.api import index as index_api
+
+    monkeypatch.setattr(index_api.IndexService, "start_scan", lambda self, root, st: 0)
+    monkeypatch.setattr(index_api.IndexService, "run_scan", lambda self, job_id, root: None)
+    monkeypatch.setattr(index_api.WatchService, "add_roots", lambda self, roots: None)
     c, _repo = client
-    # 用 tmp 卷的根路径模拟盘符根（Windows 盘符根：保留尾部斜杠）
     resp = c.post("/api/v1/index/roots/add", json={"path": "C:\\"})
     assert resp.status_code == 200
     assert resp.json()["path"] == "C:\\"  # 盘符根保留尾部斜杠

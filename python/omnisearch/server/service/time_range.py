@@ -24,12 +24,21 @@ class TimeRange:
     basis_hint: str  # "exif"（默认）| "ctime" | "mtime"（由 query 动词决定，architecture.md §12.7）
 
 
-# 具体日期/区间（支持 2026-08-14、2026/8/14、2026年8月14日、8月14日、2026.08.01）
-_DATE = re.compile(r"((?:\d{4})?[年./-]?)(\d{1,2})[月./-](\d{1,2})日?")
-# 区间（~ / 至 / 到 / 连字符分隔；两侧均为日期）
+# 具体日期/区间（支持 2026-08-14、2026/8/14、2026年8月14日、8月14日、2026.08.01）。
+# H1 修正：① 两种精确形态（4 位年完整日期 / 中文「X月X日」）——'3.11'/'1.5' 版本号不命中；
+# ② ASCII 字母数字边界（'python3.11' 中 'n3' 相邻 → 不匹配）。
+_DATE_YMD = re.compile(
+    r"(?<![A-Za-z0-9])(\d{4})[年./-](\d{1,2})[月./-](\d{1,2})日?(?![A-Za-z0-9])"
+)
+_DATE_CN = re.compile(r"(?<![A-Za-z0-9])(\d{1,2})月(\d{1,2})日?(?![A-Za-z0-9])")
+_DATE = _DATE_YMD  # 单日期匹配入口（YMD 优先；CN 形态由 _resolve_date 内分派）
+_RANGE_SEP = r"\s*(?:[~至到—]|-\s+)\s*"  # 区间分隔符：~ 至 到 —；裸 - 仅当后随空白（防与日期内连字符冲突）
 _RANGE_FULL = re.compile(
-    r"(\d{4})?[年./-]?(\d{1,2})[月./-](\d{1,2})日?\s*(?:[~至到\-—])\s*"
-    r"(\d{4})?[年./-]?(\d{1,2})[月./-](\d{1,2})日?"
+    r"(?<![A-Za-z0-9])"
+    r"(?:(?:\d{4})[年./-]\d{1,2}[月./-]\d{1,2}日?|\d{1,2}月\d{1,2}日?)"
+    + _RANGE_SEP
+    + r"(?:(?:\d{4})[年./-]\d{1,2}[月./-]\d{1,2}日?|\d{1,2}月\d{1,2}日?)"
+    r"(?![A-Za-z0-9])"
 )
 # 相对时间词（按词长降序，先匹配长词）
 _RELATIVE = {
@@ -102,18 +111,30 @@ class TimeRangeService:
 
     # ---- 具体日期 / 日期区间 ----
     def _resolve_date(self, expr: str, today: datetime, tz: tzinfo):
-        def parse_dt(y: str | None, mo: str, d: str) -> datetime:
-            year = int(y.rstrip("年./-")) if y else today.year  # 分组含分隔符（如 '2026-'）
-            return datetime(year, int(mo), int(d), tzinfo=tz)
-
         m = _RANGE_FULL.search(expr)
         if m:
-            start = parse_dt(m.group(1), m.group(2), m.group(3))
-            end = parse_dt(m.group(4), m.group(5), m.group(6))
-            if end >= start:
+            # 区间两侧分别为日期表达（分隔符与 _RANGE_SEP 一致）
+            parts = re.split(_RANGE_SEP, m.group(0))
+            start = self._parse_date_expr(parts[0], today, tz)
+            end = self._parse_date_expr(parts[1], today, tz)
+            if start and end and end >= start:
                 return start, end + timedelta(days=1)
-        m = _DATE.search(expr.strip())
+        m = _DATE_YMD.search(expr.strip())
         if m:
-            d = parse_dt(m.group(1), m.group(2), m.group(3))
+            d = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), tzinfo=tz)
             return d, d + timedelta(days=1)
+        m = _DATE_CN.search(expr.strip())
+        if m:
+            d = datetime(today.year, int(m.group(1)), int(m.group(2)), tzinfo=tz)
+            return d, d + timedelta(days=1)
+        return None
+
+    def _parse_date_expr(self, text: str, today: datetime, tz: tzinfo) -> datetime | None:
+        """解析单个日期表达（YMD 完整或中文月日）→ datetime；无法解析 → None。"""
+        m = _DATE_YMD.search(text)
+        if m:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), tzinfo=tz)
+        m = _DATE_CN.search(text)
+        if m:
+            return datetime(today.year, int(m.group(1)), int(m.group(2)), tzinfo=tz)
         return None

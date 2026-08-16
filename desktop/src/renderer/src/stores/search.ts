@@ -27,6 +27,11 @@ export const useSearchStore = defineStore("search", () => {
   const error = ref<string | null>(null);
   /** 是否已执行过搜索（空 query 或未搜索时不显示 empty 状态） */
   const searched = ref(false);
+  /**
+   * E3：请求序号——响应到达时若已被更新的请求取代则丢弃。
+   * 连续搜索（如快速回车两次）时，先发出的慢请求晚返回不得覆盖后发出的新结果。
+   */
+  let searchSeq = 0;
 
   function reset(): void {
     results.value = [];
@@ -53,20 +58,25 @@ export const useSearchStore = defineStore("search", () => {
     }
     searching.value = true;
     error.value = null;
+    const seq = ++searchSeq; // E3：记录本次请求序号，旧响应到达即丢弃
     try {
       const resp = await window.omnisearch.search({ query: q, topK: 50, mode: mode.value });
+      if (seq !== searchSeq) return; // 已有更新的请求 → 忽略过期结果
       results.value = resp.results;
       total.value = resp.total;
       latencyMs.value = resp.latency_ms;
       parsed.value = resp.parsed;
       degradedChannels.value = resp.degraded_channels;
     } catch (e) {
+      if (seq !== searchSeq) return; // 过期请求的失败同样不覆盖新状态
       error.value = e instanceof Error ? e.message : "搜索失败";
       results.value = [];
       total.value = 0;
     } finally {
-      searched.value = true;
-      searching.value = false;
+      if (seq === searchSeq) {
+        searched.value = true;
+        searching.value = false;
+      }
     }
   }
 

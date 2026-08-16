@@ -13,7 +13,6 @@ import logging
 import os
 import signal
 import threading
-import time
 
 from omnisearch.common.config import POLL_INTERVAL_MS, db_path, dev_data_dir, log_dir, qdrant_url
 from omnisearch.common.database import Database
@@ -32,6 +31,27 @@ _stop = threading.Event()
 def _handle_signal(_signum, _frame) -> None:  # noqa: ANN001
     logger.info("received shutdown signal, draining...")
     _stop.set()
+
+
+def _write_heartbeat(db: Database) -> None:
+    """心跳写 SQLite（M5 收口 4：/health worker_ready 依据；失败不阻塞主循环）。"""
+    try:
+        with db.connect() as c:
+            c.execute(
+                """INSERT INTO worker_heartbeat(worker_id, last_seen) VALUES('worker', unixepoch())
+                   ON CONFLICT(worker_id) DO UPDATE SET last_seen=unixepoch()"""
+            )
+    except Exception:  # noqa: BLE001 —— 心跳失败仅影响 readiness 判定
+        logger.warning("heartbeat write failed", exc_info=True)
+
+
+def _heartbeat_loop(db: Database, stop: threading.Event, interval_s: float) -> None:
+    """W4：独立守护线程写心跳——长任务（OCR/Caption/Embedding 数十秒）期间主循环被
+    _process_task 阻塞，若心跳也随主循环停滞，/health 会误判 worker 死亡。"""
+    logger.info("heartbeat: alive (thread, %ss)", interval_s)  # 可观测信号（verify skill 依赖）
+    _write_heartbeat(db)  # 启动即上报，避免窗口期 readiness=false
+    while not stop.wait(interval_s):
+        _write_heartbeat(db)
 
 
 def _process_task(
@@ -86,6 +106,7 @@ def main() -> None:
 
     db = Database(db_path(data_dir))
     queue = TaskQueue(db)
+    queue.recover_interrupted()  # W2：崩溃遗留的 RUNNING 任务复位（否则永久卡死）
 
     # M4：BGE Embedding + Qdrant + Caption（模型缺失/Qdrant 未启动 → 降级，不阻塞 Worker）
     embedder = vector_store = caption_provider = None
@@ -110,26 +131,13 @@ def main() -> None:
         logger.warning("caption provider unavailable, images OCR-only", exc_info=True)
 
     poll_interval_s = int(os.environ.get("OMNISEARCH_POLL_INTERVAL_MS", POLL_INTERVAL_MS)) / 1000.0
+    # W4：心跳独立线程（daemon），与任务处理解耦——长任务不再让 worker 被误判死亡
     heartbeat_s = 5.0
-    last_heartbeat = 0.0
-
-    def _write_heartbeat() -> None:
-        """心跳写 SQLite（M5 收口 4：/health worker_ready 依据；失败不阻塞主循环）。"""
-        try:
-            with db.connect() as c:
-                c.execute(
-                    """INSERT INTO worker_heartbeat(worker_id, last_seen) VALUES('worker', unixepoch())
-                       ON CONFLICT(worker_id) DO UPDATE SET last_seen=unixepoch()"""
-                )
-        except Exception:  # noqa: BLE001 —— 心跳失败仅影响 readiness 判定
-            logger.warning("heartbeat write failed", exc_info=True)
+    threading.Thread(
+        target=_heartbeat_loop, args=(db, _stop, heartbeat_s), daemon=True
+    ).start()
 
     while not _stop.is_set():
-        now = time.monotonic()
-        if now - last_heartbeat >= heartbeat_s:
-            logger.info("heartbeat: alive (poll_interval_ms=%d)", int(poll_interval_s * 1000))
-            _write_heartbeat()
-            last_heartbeat = now
         claimed: list[int] = []
         try:
             claimed = queue.claim_batch(batch_size=8)

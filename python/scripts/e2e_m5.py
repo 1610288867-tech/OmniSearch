@@ -9,7 +9,10 @@ import json
 import sys
 import time
 import urllib.request
+from datetime import datetime, timedelta
 from pathlib import Path
+
+from e2e_http import base_url
 
 
 def _post(url: str, token: str, path: str, body: dict) -> dict:
@@ -54,10 +57,13 @@ def _make_image(path: Path, text: str, size=(640, 400), exif_dt: str | None = No
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", default="http://127.0.0.1:8734")
+    ap.add_argument("--url", default=None, help="默认读取 dev.py 落盘端口（.omnisearch-ports.json）")
     ap.add_argument("--token", default="")
     ap.add_argument("--root", default="dev-data")
     args = ap.parse_args()
+
+    # T5：url 缺省时从 dev.py 端口文件取真实地址（8734 被占用顺延后仍正确）
+    args.url = args.url or base_url(args.root)
 
     root = Path(args.root).resolve() / "verify-m5"
     root.mkdir(parents=True, exist_ok=True)
@@ -65,8 +71,9 @@ def main() -> None:
 
     # ---- 1) 真实素材（§19：图片 + 文档 + OCR） ----
     print("[1] 生成素材...")
-    # 照片设「昨天」EXIF（拍摄时间，exact）+ mtime 昨天（fallback 一致）——用例 1 时间过滤
-    yesterday = "2026:08:15 10:00:00"
+    # T4：照片设「昨天」EXIF（拍摄时间，exact）+ mtime 昨天（fallback 一致）——用例 1 时间过滤。
+    # 原硬编码 '2026:08:15' 仅当天可用；改为相对当前日期动态生成，任何日期可跑。
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y:%m:%d %H:%M:%S")
     for name, text in (("statue-of-liberty.jpg", "自由女神像 2026 拍摄于纽约"),
                        ("ny-street.jpg", "New York 2026 街景"),
                        ("building.jpg", "建筑 会议纪要")):

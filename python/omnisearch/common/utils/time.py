@@ -9,16 +9,71 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, tzinfo
+from datetime import datetime, timedelta, timezone, tzinfo
 
 # EXIF 时间格式："2026:08:14 19:23:11" / "2026:08:14"（时区未知）
 _EXIF_DT = re.compile(r"^(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$")
 _EXIF_DATE = re.compile(r"^(\d{4}):(\d{2}):(\d{2})$")
 
 
+class _LocalTz(tzinfo):
+    """OS 本地时区（DST 感知，无第三方依赖）。
+
+    H4 背景：`datetime.now().astimezone().tzinfo` 返回「当前时刻的固定偏移」，
+    对夏令时时区，用它在冬季/任意过去日期做换算会差 1 小时（如 8 月拿 UTC-4 去算
+    1 月的 00:00）。本类按「具体时刻」经平台 mktime/localtime 求该时刻的正确偏移
+    （Windows localtime 含 DST 规则），因此任意日期的解析都正确；
+    非 DST 时区（UTC+8 中国）结果与之前完全一致。
+
+    用法：所有本地时间构造/换算统一经本类（架构 §8 单一实现）；tzinfo 方法只接收
+    携带本类实例的 datetime，其墙钟分量即视为本地时间。
+    """
+
+    _cache: dict[int, timedelta] = {}
+
+    @classmethod
+    def _offset_for_epoch(cls, epoch: int) -> timedelta:
+        off = cls._cache.get(epoch)
+        if off is None:
+            local = datetime.fromtimestamp(epoch)  # 该时刻 OS 本地墙钟（含 DST）
+            utc = datetime.fromtimestamp(epoch, timezone.utc).replace(tzinfo=None)
+            off = local - utc
+            if len(cls._cache) > 4096:
+                cls._cache.clear()
+            cls._cache[epoch] = off
+        return off
+
+    def _wall(self, dt: datetime | None) -> datetime:
+        if dt is None:
+            dt = datetime.now()
+        return dt.replace(tzinfo=None)  # 墙钟分量（naive）
+
+    def utcoffset(self, dt: datetime | None) -> timedelta:
+        wall = self._wall(dt)
+        epoch = int(wall.timestamp())  # naive → 本地墙钟 → mktime（含 DST 规则）
+        return self._offset_for_epoch(epoch)
+
+    def dst(self, dt: datetime | None) -> timedelta:
+        wall = self._wall(dt)
+        # 标准偏移估算：同年 1 月 1 日的偏移（南半球少见的「反 DST」时区可接受近似）
+        std = self.utcoffset(wall.replace(month=1, day=1).replace(tzinfo=None))
+        return self.utcoffset(wall) - std
+
+    def tzname(self, dt: datetime | None) -> str | None:
+        return None
+
+    def fromutc(self, dt: datetime) -> datetime:
+        """UTC aware → 本地墙钟（每时刻偏移经 OS localtime 求，DST 正确）。"""
+        epoch = int(dt.replace(tzinfo=timezone.utc).timestamp())  # dt 表示 UTC
+        return datetime.fromtimestamp(epoch).replace(tzinfo=self)
+
+
+_LOCAL = _LocalTz()  # 单例：所有携带本 tz 的 aware datetime 可正常比较
+
+
 def local_tz() -> tzinfo:
-    """Windows 当前时区（用户输入的本地语义基准）。"""
-    return datetime.now().astimezone().tzinfo
+    """OS 本地时区（DST 感知，用户输入的本地语义基准）。"""
+    return _LOCAL
 
 
 def now_local() -> datetime:

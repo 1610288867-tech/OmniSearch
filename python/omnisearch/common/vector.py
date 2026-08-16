@@ -83,14 +83,22 @@ class VectorStore:
         )
 
     # ---- 查询（qdrant-client ≥1.13 用 query_points；旧版 search 兼容） ----
-    def search(self, vector: list[float], top_k: int = 100) -> list[tuple[dict, float]]:
-        """语义检索：返回 [(payload, score)]。过滤（is_deleted 等）由调用方回 SQLite 完成。"""
+    def search(self, vector: list[float], top_k: int = 100, timeout: float = 3.0) -> list[tuple[dict, float]]:
+        """语义检索：返回 [(payload, score)]。过滤（is_deleted 等）由调用方回 SQLite 完成。
+
+        H6 修正：查询路径显式传 timeout（默认 3s，与 SearchService 的 VECTOR_TIMEOUT_S 对齐）——
+        客户端默认 10s 超时 > 通道超时，会留下滞留线程；查询侧超时后 Qdrant 客户端最多再撑 3s。
+        写入（upsert）用客户端默认 10s，不受影响。
+        注意：qdrant-client 内部把 timeout 当整数解析（int(params['timeout'])），必须传 int。
+        """
+        timeout_s = int(timeout)
         if hasattr(self._client, "query_points"):
             resp = self._client.query_points(
                 collection_name=COLLECTION_NAME,
                 query=vector,
                 limit=top_k,
                 search_params=qm.SearchParams(hnsw_ef=HNSW_EF),
+                timeout=timeout_s,
             )
             return [(h.payload, float(h.score)) for h in resp.points]
         hits = self._client.search(
@@ -98,23 +106,37 @@ class VectorStore:
             query_vector=vector,
             limit=top_k,
             search_params=qm.SearchParams(hnsw_ef=HNSW_EF),
+            timeout=timeout_s,
         )
         return [(h.payload, float(h.score)) for h in hits]
 
     # ---- 删除/对账 ----
     def list_keys_by_file(self, file_id: int) -> list[int]:
-        """按 file_id 列出该文件全部 point_id（stale 差集计算用，architecture.md §11.5）。"""
-        return [
-            p.id
-            for p in self._client.scroll(
+        """按 file_id 列出该文件全部 point_id（stale 差集计算用，architecture.md §11.5）。
+
+        W6 修正：scroll 默认 limit=10000 无分页，超大文档（>10000 chunk）只返回头部，
+        stale 清理会漏掉尾部——按 offset 游标分页取全（上限防御：同键去重 + 无进展即停）。
+        """
+        out: list[int] = []
+        seen: set[int] = set()
+        offset = None
+        while True:
+            points, offset = self._client.scroll(
                 collection_name=COLLECTION_NAME,
                 scroll_filter=qm.Filter(
                     must=[qm.FieldCondition(key="file_id", match=qm.MatchValue(value=file_id))]
                 ),
-                limit=10000,
+                limit=1000,
                 with_payload=False,
-            )[0]
-        ]
+                offset=offset,
+            )
+            for p in points:
+                if p.id not in seen:
+                    seen.add(p.id)
+                    out.append(p.id)
+            if offset is None or not points:
+                break
+        return out
 
     def delete_points(self, point_ids: list[int]) -> None:
         if point_ids:

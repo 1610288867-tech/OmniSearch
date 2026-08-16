@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import platform
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,11 @@ from omnisearch.common.models import FileStatus, FileType
 from omnisearch.common.utils.paths import normalize
 
 FTS_COLUMNS = ("filename", "filename_seg", "dir_tokens")
+
+# S5：NTFS/exFAT 等大小写不敏感 FS —— case-only rename 后磁盘以新大小写出现，
+# BINARY 精确匹配找不到旧行 → 会新建「同文件第二个活跃行」。仅在未命中时做一次
+# NOCASE 兜底查询（热路径仍走 path 索引，零开销）；非 Windows（区分大小写 FS）不启用。
+_CASE_INSENSITIVE_FS = platform.system() == "Windows"
 
 
 @dataclass(frozen=True)
@@ -64,9 +70,24 @@ class FileRepository:
             for m in metas:
                 norm_path = normalize(m.path)  # 统一分隔符（事实数据源唯一写入规范）
                 row = c.execute(
-                    "SELECT id, filename, dir_path, is_deleted, size_bytes, mtime_ns, status FROM files WHERE path = ?",
+                    "SELECT id, filename, dir_path, is_deleted, size_bytes, mtime_ns, status, path FROM files WHERE path = ?",
                     (norm_path,),
                 ).fetchone()
+                if row is None and _CASE_INSENSITIVE_FS:
+                    # S5：case-only rename 的兜底——大小写不敏感命中既有行（同路径复活/更新），
+                    # 并把 path 规范为磁盘当前大小写（消除重复活跃行 + 展示一致性）。
+                    row = c.execute(
+                        "SELECT id, filename, dir_path, is_deleted, size_bytes, mtime_ns, status, path "
+                        "FROM files WHERE path = ? COLLATE NOCASE LIMIT 1",
+                        (norm_path,),
+                    ).fetchone()
+                    if row is not None and row["path"] != norm_path:
+                        c.execute(
+                            "UPDATE files SET path=?, updated_at=unixepoch() WHERE id=?",
+                            (norm_path, row["id"]),
+                        )
+                        row = dict(row)
+                        row["path"] = norm_path
                 if row is None:
                     cur = c.execute(
                         """INSERT INTO files (path, filename, dir_path, extension, size_bytes,
@@ -142,7 +163,16 @@ class FileRepository:
         try:
             ids = []
             for p in paths:
-                row = c.execute("SELECT id FROM files WHERE path=? AND is_deleted=0", (normalize(p),)).fetchone()
+                norm_path = normalize(p)
+                row = c.execute(
+                    "SELECT id FROM files WHERE path=? AND is_deleted=0", (norm_path,)
+                ).fetchone()
+                if row is None and _CASE_INSENSITIVE_FS:
+                    # S5：大小写变体路径的删除也要命中（case-only rename 后删除事件带新大小写）
+                    row = c.execute(
+                        "SELECT id FROM files WHERE path=? COLLATE NOCASE AND is_deleted=0 LIMIT 1",
+                        (norm_path,),
+                    ).fetchone()
                 if row:
                     c.execute("UPDATE files SET is_deleted=1, updated_at=unixepoch() WHERE id=?", (row["id"],))
                     ids.append(row["id"])

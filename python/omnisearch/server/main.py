@@ -123,8 +123,9 @@ def create_app() -> FastAPI:
                 logger.warning("USN recovery failed, fallback incremental scan", exc_info=True)
                 usn_ok = False
             if not usn_ok:
-                logger.warning("USN 不可用，已使用增量扫描（P2.1 fallback）")
-                for root in active_roots:
+                # U5：只对失败卷做增量扫描降级（成功卷的 USN 事件已处理，不重复全扫）
+                logger.warning("USN 部分/全部不可用，增量扫描降级（P2.1 fallback）")
+                for root in usn_recovery.fallback_roots:
                     job_id = index_service.start_scan(root, "incremental")
                     _threading.Thread(
                         target=index_service.run_scan, args=(job_id, root), daemon=True

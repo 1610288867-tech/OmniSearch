@@ -38,8 +38,10 @@ function createWindow(): void {
   }
 
   // ============ GUI 自动验证信号（verify-omnisearch Skill 检查依据） ============
+  // E2 修正：探针仅开发模式执行（生产构建不得注入搜索词/自动切 tab；isDev 定义见上方）
   mainWindow.webContents.on("did-finish-load", () => {
     console.log("[main] renderer loaded OK");
+    if (!isDev) return;
     // 延迟等待 Vue 挂载 + store 初始化后探测 bridge / DOM / 搜索 smoke
     setTimeout(() => {
       if (mainWindow) {

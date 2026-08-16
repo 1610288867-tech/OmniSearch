@@ -124,3 +124,34 @@ def test_scan_resurrect_same_path(db, tmp_path):
     assert row["is_deleted"] == 0
     assert db.connect().execute("SELECT count(*) c FROM files").fetchone()["c"] == 1
     conn.close()
+
+
+def test_writer_failure_marks_job_failed(tmp_path, monkeypatch):
+    """S1：writer 写入异常 → job FAILED（不永久挂起）。"""
+    from omnisearch.common.config import db_path as _dbp
+    import os
+    os.environ["OMNISEARCH_DEV_DATA"] = str(tmp_path)
+    from omnisearch.common.database import Database
+    from omnisearch.server.database.migrations.migrate import migrate
+    from omnisearch.server.repository.files import FileRepository
+    from omnisearch.server.repository.fts import FtsRepository
+    from omnisearch.server.repository.jobs import IndexJobRepository
+    from omnisearch.server.service.index import IndexService
+
+    db = Database(_dbp(tmp_path))
+    migrate(db)
+    root = tmp_path / "big"
+    root.mkdir()
+    for i in range(30):
+        (root / f"f{i}.txt").write_text("x" * 10, encoding="utf-8")
+    svc = IndexService(db, FileRepository(db), FtsRepository(db), IndexJobRepository(db))
+
+    def boom(*a, **k):
+        raise RuntimeError("write failure")
+
+    monkeypatch.setattr(svc, "_flush_batch", boom)
+    job_id = svc.start_scan(str(root), "full")
+    svc.run_scan(job_id, str(root))  # 不应挂起
+    with db.connect() as c:
+        assert c.execute("SELECT status FROM index_jobs WHERE id=?", (job_id,)).fetchone()["status"] == "FAILED"
+    os.environ.pop("OMNISEARCH_DEV_DATA", None)

@@ -24,6 +24,7 @@ class TaskQueue:
         """原子领取 PENDING 任务（短事务），返回 task_id 列表。
 
         同一事务内将对应 files.status 置 PROCESSING（架构 §10.2/§10.3）。
+        每次 claim 递增 attempt（W1 修正：attempt 累计，MAX_ATTEMPTS_EXCEEDED 可达）。
         """
         conn = self._db.connect()
         try:
@@ -38,7 +39,7 @@ class TaskQueue:
                 return []
             ids = [r["id"] for r in rows]
             conn.execute(
-                """UPDATE ai_tasks SET status = ?, updated_at = unixepoch()
+                """UPDATE ai_tasks SET status = ?, attempt = attempt + 1, updated_at = unixepoch()
                    WHERE id IN ({})""".format(",".join("?" * len(ids))),
                 (TaskStatus.RUNNING.value, *ids),
             )
@@ -88,6 +89,24 @@ class TaskQueue:
                    )""",
                 (FileStatus.FAILED.value, task_id),
             )
+
+    def recover_interrupted(self) -> int:
+        """启动恢复（W2 修正）：进程崩溃遗留的 RUNNING 任务复位为 PENDING。
+
+        崩溃后 RUNNING 任务无任何恢复路径会永久卡死（retry 拒 NOT_FAILED、
+        reindex 拒 ALREADY_ACTIVE、partial unique index 挡入队）——Worker 启动时调用。
+        返回复位数。
+        """
+        with self._db.connect() as conn:
+            cur = conn.execute(
+                """UPDATE ai_tasks SET status = ?, updated_at = unixepoch()
+                   WHERE status = ?""",
+                (TaskStatus.PENDING.value, TaskStatus.RUNNING.value),
+            )
+        n = cur.rowcount
+        if n:
+            logger.info("recovered %d interrupted RUNNING tasks → PENDING", n)
+        return n
 
     def retry(self, task_id: int, max_attempts: int = 3) -> str | None:
         """手动重试：FAILED → PENDING（attempt 累计）。

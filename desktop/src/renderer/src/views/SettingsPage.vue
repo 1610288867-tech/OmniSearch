@@ -50,6 +50,20 @@ async function pickFolder(): Promise<void> {
   }
 }
 
+// E1 修正：搜索设置保存（此前模板引用但 script 未定义 → 设置保存功能失效）
+function saveMode(e: Event): void {
+  void store.save({ search_mode: (e.target as HTMLSelectElement).value });
+}
+function saveWKw(e: Event): void {
+  void store.save({ w_kw: Number((e.target as HTMLInputElement).value) });
+}
+function saveWSem(e: Event): void {
+  void store.save({ w_sem: Number((e.target as HTMLInputElement).value) });
+}
+function saveTopK(e: Event): void {
+  void store.save({ topK: Number((e.target as HTMLInputElement).value) });
+}
+
 async function pickDrive(): Promise<void> {
   if (!showDrives.value) await index.loadDrives();
   showDrives.value = !showDrives.value;
