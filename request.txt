@@ -1,0 +1,663 @@
+我要开发一个桌面端 AI 文件搜索软件，项目名称为：
+# OmniSearch
+请使用 **/plan 模式** 为我设计完整的软件架构方案。
+注意：
+* 不要直接写代码
+* 不要生成简单 Demo
+* 输出完整工程架构设计
+* 按真实桌面软件项目进行设计
+* 重点体现搜索引擎、AI理解、数据索引能力
+---
+# 项目定位
+OmniSearch 是一个类似：
+* Windows Everything
+* macOS Spotlight
+* Google Photos 智能搜索的本地 AI 搜索工具。用户可以通过自然语言搜索本地文件。
+例如：
+用户输入：
+> 找出昨天和前天拍摄的关于自由女神的照片
+系统需要理解：
+1. 时间条件：
+昨天、前天
+↓
+文件创建时间 / 修改时间 / 图片 EXIF 拍摄时间
+2. 内容语义：
+自由女神
+↓
+图片内容理解
+3. 文件类型：
+照片
+↓
+图片文件过滤
+最终返回符合条件的文件。
+---
+# 整体技术架构
+采用以下架构：
+```
+Vue3 + TypeScript
+        |
+        |
+     Electron
+        |
+        |
+     FastAPI
+        |
+        |
+ -----------------------------
+ |                  |                 |
+
+SQLite       Qdrant       AI Worker
+ |                  |                 |
+
+Metadata   Semantic       OCR
+
+Storage    Search        Embedding
+
+
+ |
+
+ |
+
+SQLite FTS5
+
+
+ |
+
+ |
+
+Hybrid Search
+
+
+ |
+
+ |
+
+Search Result
+```
+---
+# 技术栈要求
+## Desktop Application
+使用：
+* Electron
+* Vue3
+* TypeScript
+* Vite
+负责：
+
+* 用户界面
+* 文件搜索交互
+* 本地文件访问
+* 桌面应用生命周期
+---
+## Backend
+使用：
+* Python
+* FastAPI
+负责：
+* 搜索请求处理
+* Query理解
+* 搜索调度
+* 数据访问
+* AI任务管理
+采用分层架构：
+```
+FastAPI
+ |
+ |
+Router
+
+ |
+ |
+Service
+ |
+ |
+Repository
+ |
+ |
+Database
+```
+说明：
+每一层职责。
+---
+# 数据存储设计
+## SQLite
+SQLite作为主要Metadata数据库。
+保存
+文件基础信息：
+* 文件路径
+* 文件名称
+* 文件大小
+* 文件类型
+* 创建时间
+* 修改时间
+图片信息：
+* EXIF信息
+* 拍摄时间
+* GPS位置
+* 相机信息
+搜索记录：
+* 用户搜索历史
+* 搜索结果记录
+请设计：
+数据库表结构：
+包括：
+* 表名
+* 字段
+* 类型
+* 索引
+* 表关系
+---
+# SQLite FTS5全文搜索
+使用SQLite FTS5实现：
+关键词搜索。
+例如：
+用户：
+```
+resume.pdf
+```
+搜索：
+
+```
+resume
+```
+快速定位文件。
+请设计：
+* FTS5索引结构
+* 建立流程
+* 查询流程
+* 与Metadata数据库关系
+---
+# Qdrant语义搜索
+使用：
+Qdrant Vector Database
+用于：
+图片和文本语义搜索。
+例如：
+图片：
+```
+IMG001.jpg
+```
+AI生成描述：
+
+```
+A photo of Statue of Liberty in New York
+```
+
+经过Embedding：
+
+```
+vector embedding
+```
+
+存入Qdrant。
+
+用户搜索：
+
+```
+自由女神
+```
+
+转换为Embedding：
+
+进行向量匹配。
+
+请设计：
+
+* Collection结构
+* Vector字段
+* Payload设计
+* 数据同步方式
+
+---
+
+# AI Worker设计
+
+AI Worker负责后台文件理解。
+
+不要阻塞FastAPI。
+
+设计：
+
+```
+File
+
+ |
+
+Parser
+
+ |
+
+AI Worker
+
+ |
+
+Embedding
+
+ |
+
+Qdrant
+```
+
+支持：
+
+## 图片
+
+处理：
+
+* 图片理解
+* 图片描述生成
+* Embedding
+
+## 文档
+
+支持：
+
+* PDF
+* TXT
+* Markdown
+* Word
+
+处理：
+
+* 文本提取
+* 内容切分
+* Embedding
+
+## OCR
+
+支持：
+
+图片文字识别。
+
+例如：
+
+图片中：
+
+```
+New York
+2026
+```
+
+提取进入搜索系统。
+
+请设计：
+
+* Worker架构
+* 任务流程
+* 失败重试机制
+* 与FastAPI通信方式
+
+---
+
+# 文件索引系统
+
+设计完整索引Pipeline。
+
+流程：
+
+```
+用户指定目录
+
+
+↓
+
+文件扫描
+
+
+↓
+
+文件Metadata提取
+
+
+↓
+
+SQLite保存
+
+
+↓
+
+内容解析
+
+
+↓
+
+AI Worker处理
+
+
+↓
+
+Embedding生成
+
+
+↓
+
+Qdrant保存
+
+
+↓
+
+搜索可用
+```
+
+需要设计：
+
+* 初次扫描
+* 增量扫描
+* 文件变化检测
+* 删除同步
+
+---
+
+# 文件监听机制
+
+设计：
+
+本地文件变化监听。
+
+例如：
+
+新增：
+
+```
+new_photo.jpg
+```
+
+系统自动：
+
+```
+Detect
+
+↓
+
+Parse
+
+↓
+
+Index
+
+↓
+
+Search Available
+```
+
+说明：
+
+如何实现：
+
+* 新增文件
+* 修改文件
+* 删除文件
+
+---
+
+# Hybrid Search设计
+
+这是项目核心。
+
+实现：
+
+Metadata Search
+
+*
+
+Keyword Search
+
+*
+
+Semantic Search
+
+流程：
+
+用户输入：
+
+```
+昨天拍的自由女神照片
+```
+
+Query Processing：
+
+解析：
+
+```
+type=image
+
+time=yesterday
+
+semantic=自由女神
+```
+
+然后：
+
+## SQLite Search
+
+负责：
+
+* 时间过滤
+* 文件类型过滤
+* 文件名搜索
+
+## Qdrant Search
+
+负责：
+
+* 图片语义匹配
+* 文本语义匹配
+
+最后：
+
+进行：
+
+Hybrid Ranking
+
+请设计：
+
+* 搜索流程
+* 排序算法
+* Score融合策略
+
+例如：
+
+```
+Final Score
+
+=
+
+Metadata Score
+
++
+
+Keyword Score
+
++
+
+Semantic Score
+
+```
+
+---
+
+# Search API设计
+
+设计FastAPI接口。
+
+包括：
+
+## 文件索引
+
+```
+POST /index
+```
+
+## 搜索
+
+```
+POST /search
+```
+
+请求：
+
+```json
+{
+"query":
+"昨天拍的自由女神照片"
+}
+```
+
+响应：
+
+包含：
+
+* 文件路径
+* 文件类型
+* 匹配原因
+* 相似度
+* 时间信息
+
+## AI处理状态
+
+```
+GET /task/status
+```
+
+---
+
+# Electron架构设计
+
+设计：
+
+* Main Process
+* Renderer Process
+* IPC通信
+
+说明：
+
+Electron如何：
+
+* 启动FastAPI
+* 管理本地服务
+* 调用搜索接口
+* 访问文件系统
+
+---
+
+# Vue3前端设计
+
+设计页面：
+
+## Search Page
+
+功能：
+
+* 搜索框
+* 搜索建议
+* 搜索结果列表
+* 文件预览
+
+## Result Detail
+
+显示：
+
+* 文件信息
+* AI描述
+* 匹配原因
+
+## Settings
+
+包括：
+
+* 索引目录管理
+* AI模型配置
+* 数据库管理
+
+说明：
+
+Vue组件结构。
+
+---
+
+# 项目目录设计
+
+设计完整目录。
+
+例如：
+
+```
+OmniSearch
+
+├── desktop
+│
+├── backend
+│
+├── worker
+│
+├── database
+│
+├── models
+│
+└── docs
+```
+
+说明：
+
+每个目录职责。
+
+---
+
+# 性能设计
+
+考虑：
+
+* 大量文件索引
+* 百万级文件搜索
+* Embedding速度
+* SQLite性能
+* Qdrant查询速度
+
+说明：
+
+优化方案。
+
+---
+
+# 最终输出格式
+
+请按照以下结构输出：
+
+1. 项目定位
+
+2. 整体架构设计
+
+3. 系统数据流
+
+4. Electron架构
+
+5. Vue3前端架构
+
+6. FastAPI后端架构
+
+7. SQLite数据库设计
+
+8. FTS5全文搜索设计
+
+9. Qdrant向量搜索设计
+
+10. AI Worker设计
+
+11. 文件索引Pipeline
+
+12. Hybrid Search算法设计
+
+13. API设计
+
+14. 项目目录结构
+
+15. MVP开发计划
+
+16. 后续扩展方向
+
+要求：
+
+* 架构需要达到简历项目水平
+* 不增加无关复杂技术
+* 所有技术必须服务于本地AI搜索场景
+* 重点突出：搜索引擎 + AI理解 + 桌面应用

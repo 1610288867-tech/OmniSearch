@@ -1,0 +1,8 @@
+# Qdrant 本机模式配置（打包发布用；开发期由 dev.py 注入环境变量覆盖）
+# architecture.md §9.1：单 collection "omnisearch"、HNSW 初始参数、int8 量化可选
+service:
+  http_port: 6333
+  grpc_port: 6334
+storage:
+  storage_path: ./data/qdrant
+telemetry_disabled: true

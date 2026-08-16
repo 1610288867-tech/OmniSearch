@@ -1,0 +1,33 @@
+{
+  "comment": "模型清单（architecture.md §10.8）：{id, name, source, sha256, size_mb, format, required_by}。模型下载到用户数据目录（%LOCALAPPDATA%/OmniSearch/models，dev 为 dev-data/models），不进入 Git。sha256 为空时下载后自动计算并回填。",
+  "version": 1,
+  "models": [
+    {
+      "id": "bge-small-zh-v1.5-onnx",
+      "name": "BGE-small-zh v1.5 (ONNX)",
+      "source": "https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/main/onnx/model.onnx",
+      "sha256": "69a0b846f4f116b5e6aabf9546ea6754d02264f3211a13a1bd69b31b8040749a",
+      "size_mb": 95,
+      "format": "onnx",
+      "required_by": "embedding"
+    },
+    {
+      "id": "bge-small-zh-v1.5-tokenizer",
+      "name": "BGE-small-zh v1.5 tokenizer",
+      "source": "https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/main/tokenizer.json",
+      "sha256": "48cea5d44424912a6fd1ea647bf4fe50b55ab8b1e5879c3275f80e339e8fae26",
+      "size_mb": 4,
+      "format": "json",
+      "required_by": "embedding"
+    },
+    {
+      "id": "bge-small-zh-v1.5-config",
+      "name": "BGE-small-zh v1.5 config",
+      "source": "https://huggingface.co/Xenova/bge-small-zh-v1.5/resolve/main/config.json",
+      "sha256": "d4193ead3a810fd694fa8a31d7fc72fbaebc0668b603e398734bf2f6538ff42f",
+      "size_mb": 1,
+      "format": "json",
+      "required_by": "embedding"
+    }
+  ]
+}

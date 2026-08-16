@@ -1,0 +1,32 @@
+# ---- Node / Electron ----
+node_modules/
+dist/
+dist-electron/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# ---- 开发期数据（可重建，architecture.md §14 / §2.3）----
+# SQLite 主库（db/）由扫描重建；Qdrant dev data（qdrant/ 存储）由 Worker 重建；
+# 模型（models/）由 download_models.py 下载；日志（logs/）运行时生成
+dev-data/
+
+# ---- 运行时 ----
+*.log
+
+# ---- 二进制/打包资源 ----
+# Qdrant Sidecar 二进制（按需放置，不入库）
+qdrant/bin/
+
+# ---- 编辑器 / 本地配置 ----
+.vscode/
+.idea/
+# Claude Code：本地偏好不入库（skills/ 项目共享资产保留入库）
+.claude/settings.local.json
+# 第三方 skill 的工具副本（与 .claude/skills 重复，不入库）
+.agents/
