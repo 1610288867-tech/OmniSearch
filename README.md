@@ -25,6 +25,7 @@
 |---|---|
 | 全量/增量扫描 | 8 线程扫描、Watchdog 实时监听（增/改/删/重命名）、删除软标记先行 |
 | 多扫描位置 | 任意盘符/文件夹多 Root（原生对话框选择）、重复/父子冲突拒绝、启用/禁用、移除保留已索引数据、顺序扫描进度 |
+| USN 启动恢复（P2.1） | 关闭期文件变化启动自动恢复（USN Journal 优先，不可用自动降级增量扫描）、断点续扫 |
 | 文件名毫秒检索 | FTS5 contentless-delete，中文 jieba 前缀查询 |
 | 文档全文检索 | TXT / MD / PDF / DOCX → 分块 → 正文命中（含高亮片段证据） |
 | OCR 文字搜索 | 图片内文字（zh+en）→ 关键词通道（「识别到文字：New York 2026」） |
@@ -141,5 +142,5 @@ OmniSearch/
 ## 阶段规划
 
 - **Phase 1 — MVP（完成 ✅）**：M0 骨架 → M1 扫描+文件名搜索 → M2 文档全文 → M3 OCR → M4 语义搜索 → M5 Hybrid+产品化（+ 最终收口：timeout 语义 / QueryParser 边界 / Metadata-only / readiness / deadline / 验证清理）
-- **Phase 2 — 工程增强**：USN Journal 启动恢复、断点续扫、content_hash 复用、Worker 自动重试/优雅退出、崩溃自愈、本地 LLM Query Parser、Query 缓存、缩略图缓存、托盘+快捷键、打包发布
+- **Phase 2 — 工程增强**：**P2.1 USN Journal 启动恢复 + 断点续扫（已完成 ✅）**；后续：content_hash 复用、Worker 自动重试/优雅退出、崩溃自愈、本地 LLM Query Parser、Query 缓存、缩略图缓存、托盘+快捷键、打包发布
 - **Phase 3 — Future Extensions**：云端 VLM、以图搜图（CLIP）、人脸识别、语音搜索、视频理解、插件系统、跨设备同步

@@ -25,6 +25,14 @@ class IndexJobRepository:
                 (scanned, errors, job_id),
             )
 
+    def update_cursor(self, job_id: int, cursor_path: str | None) -> None:
+        """断点续扫（P2.1）：记录 DFS 扫描进度（当前待处理目录栈顶）；完成/失败时清空。"""
+        with self._db.connect() as c:
+            c.execute(
+                "UPDATE index_jobs SET cursor_path=? WHERE id=?",
+                (cursor_path, job_id),
+            )
+
     def finish(self, job_id: int, status: str, total: int) -> None:
         with self._db.connect() as c:
             c.execute(

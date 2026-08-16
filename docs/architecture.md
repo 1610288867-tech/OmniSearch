@@ -800,7 +800,20 @@ OmniSearch/
 
 ## 15.2 Phase 2 — 工程增强（约 4~5 周）
 
-USN Journal 启动恢复｜断点续扫｜hash 复用 AI 结果｜Worker 自动重试/任务取消/启动恢复｜优雅退出 drain｜崩溃自愈｜托盘+全局快捷键｜**Local LLM Query Parser（可选增强）**｜模型版本升级与重建｜每日对账｜缩略图缓存｜Qdrant payload 冗余过滤优化｜Benchmark 调优（HNSW/batch_size/批量参数）｜PyInstaller + electron-builder 打包。
+**P2.1 已完成（2026-08-16）：USN Journal 启动恢复 + 断点续扫**（ADR-006）。
+
+- 启动流程：应用启动 → 按卷读取 USN Journal 增量事件（CREATE/MODIFY/DELETE/RENAME）→
+  复用 IndexService.handle_changes/delete/rename（不复制索引逻辑）→ 事件成功应用后推进 cursor
+- cursor：settings KV `usn_cursor`（{volume: {journal_id, usn, ts}}），与 index_jobs.cursor_path
+  （DFS 断点）语义分离；崩溃时 cursor 不推进 → 重启重放（幂等兜底）
+- 降级：非 NTFS / Journal 不可用 / 权限不足（普通用户打开卷句柄需管理员）/ Journal 回绕
+  → 自动降级为启动增量扫描（mtime+size 对比，后台执行，不阻塞应用启动）
+- 断点续扫：index_jobs.cursor_path 记录 DFS 栈顶（每 1000 目录），中断后从该目录继续
+- 实现：UsnReader（纯 ctypes + Win32 API，零新依赖）+ UsnRecoveryService（事件归一化 + root 过滤）
+- 测试：pytest 逻辑层 27 项（FakeReader 注入）+ 真实 Windows E2E（fallback 路径 5/5 PASS；
+  真实 USN 读取需管理员，标记 SKIPPED）
+
+P2.1 后续（未实现）：hash 复用 AI 结果｜Worker 自动重试/任务取消/启动恢复｜优雅退出 drain｜崩溃自愈｜托盘+全局快捷键｜**Local LLM Query Parser（可选增强）**｜模型版本升级与重建｜每日对账｜缩略图缓存｜Qdrant payload 冗余过滤优化｜Benchmark 调优（HNSW/batch_size/批量参数）｜PyInstaller + electron-builder 打包。
 
 ## 15.3 Phase 3 — Future Extensions（仅记录）
 

@@ -106,8 +106,32 @@ def create_app() -> FastAPI:
         configure_tasks(tasks_repo)
         configure_settings(SettingsService(db, settings_repo, models_dir(data_dir)))
 
+        # P2.1 启动恢复：USN Journal 优先（应用关闭期间的文件变化）→ 不可用/回绕/失败
+        # 自动降级为增量扫描（mtime+size 对比，后台执行，不阻塞应用启动）。
+        # USN 是加速/恢复机制，不是搜索正确性的唯一来源（architecture.md Phase 2）。
+        active_roots = [r["path"] for r in settings_repo.get_index_roots() if r.get("enabled", True)]
+        if active_roots:
+            import threading as _threading
+
+            from omnisearch.server.service.usn import UsnReader
+            from omnisearch.server.service.usn_recovery import UsnRecoveryService
+
+            usn_recovery = UsnRecoveryService(db, index_service, settings_repo, UsnReader())
+            try:
+                usn_ok = usn_recovery.run(active_roots)
+            except Exception:  # noqa: BLE001 —— USN 故障不得阻塞应用启动
+                logger.warning("USN recovery failed, fallback incremental scan", exc_info=True)
+                usn_ok = False
+            if not usn_ok:
+                logger.warning("USN 不可用，已使用增量扫描（P2.1 fallback）")
+                for root in active_roots:
+                    job_id = index_service.start_scan(root, "incremental")
+                    _threading.Thread(
+                        target=index_service.run_scan, args=(job_id, root), daemon=True
+                    ).start()  # 后台增量恢复：不阻塞 lifespan / UI
+
         # 重启场景恢复监听（roots 为 dict 结构 [{path, enabled, created_at}]）；首次扫描经 add_roots 动态启动
-        watch.start([r["path"] for r in settings_repo.get_index_roots() if r.get("enabled", True)])
+        watch.start(active_roots)
         yield
         watch.stop()
         logger.info("server shutting down: WAL checkpoint")

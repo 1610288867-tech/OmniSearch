@@ -38,6 +38,7 @@ SCAN_WORKERS = 8        # stat 线程数（architecture.md §11.1）
 SCAN_QUEUE_SIZE = 10_000
 WRITE_BATCH = 1_000     # 每 1000 行一个短事务
 PROGRESS_EVERY = 500    # 每 500 文件更新进度
+CURSOR_EVERY = 1_000    # 断点续扫（P2.1）：每弹出 1000 个目录更新 cursor_path
 
 _SENTINEL = None
 
@@ -70,15 +71,21 @@ class IndexService:
         return self._jobs.create(root, scan_type)
 
     def run_scan(self, job_id: int, root: str) -> None:
-        """后台执行扫描（FastAPI BackgroundTasks 线程池调用；UI 经 /index/status 轮询进度）。"""
+        """后台执行扫描（FastAPI BackgroundTasks 线程池调用；UI 经 /index/status 轮询进度）。
+
+        P2.1 断点续扫：job.cursor_path 非空（上次中断）→ DFS 从该目录继续；
+        完成/失败 → 清空 cursor。已处理部分的文件由幂等 upsert + 完成时 _sync_deleted 覆盖。
+        """
         try:
             result = self._scan_tree(root, job_id)
             # 删除同步：库中活跃但磁盘已消失的 path → 软删除 + FTS cleanup
             self._sync_deleted(root)
+            self._jobs.update_cursor(job_id, None)  # 完成：清断点
             self._jobs.finish(job_id, JobStatus.DONE.value, result.total)
             logger.info("scan done root=%s job=%d total=%d errors=%d", root, job_id, result.total, result.errors)
         except Exception:
             logger.exception("scan failed root=%s job=%d", root, job_id)
+            self._jobs.update_cursor(job_id, None)
             self._jobs.finish(job_id, JobStatus.FAILED.value, 0)
 
     def _scan_tree(self, root: str, job_id: int) -> _ScanResult:
@@ -88,11 +95,23 @@ class IndexService:
         scanned_total: list[int] = [0]  # writer 线程汇总
 
         def producer() -> None:
-            """有序 DFS（显式栈），产出待 stat 的文件路径。"""
+            """有序 DFS（显式栈），产出待 stat 的文件路径。
+
+            P2.1 断点续扫：启动栈取 job.cursor_path（上次中断位置，有效目录才用）；
+            每弹出 CURSOR_EVERY 个目录更新 cursor_path = 当前栈顶（中断恢复点）。
+            """
             try:
-                stack = [Path(root)]
+                job = self._jobs.get(job_id)
+                cursor = job.get("cursor_path") if job else None
+                start = Path(cursor) if cursor and os.path.isdir(cursor) else Path(root)
+                stack = [start]
+                pops = 0
                 while stack and not stop.is_set():
                     current = stack.pop()
+                    pops += 1
+                    if pops % CURSOR_EVERY == 0:
+                        # 断点 = 下一个待处理目录（栈顶）；栈空表示即将完成
+                        self._jobs.update_cursor(job_id, str(stack[-1]) if stack else None)
                     try:
                         entries = sorted(os.scandir(current), key=lambda e: e.name.lower(), reverse=True)
                     except OSError as exc:
