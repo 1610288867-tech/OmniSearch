@@ -12,6 +12,8 @@ import os
 import threading
 from typing import Callable
 
+from omnisearch.common.utils.paths import root_covers, root_key
+
 from watchdog.events import (
     FileCreatedEvent,
     FileDeletedEvent,
@@ -73,6 +75,7 @@ class WatchService:
         self._moved: list[tuple[str, str]] = []
         self._timer: threading.Timer | None = None
         self._watches: dict[str, object] = {}  # root（规范化）→ watchdog watch 句柄（remove_root 用）
+        self._active_roots: set[str] = set()  # root_key 集合：事件执行前的 root 状态校验（收尾 2）
 
     # ---------------- 生命周期 ----------------
 
@@ -88,6 +91,7 @@ class WatchService:
         handler = _Handler(self)
         for root in valid:
             self._watches[root] = observer.schedule(handler, root, recursive=True)
+            self._active_roots.add(root_key(root))
         try:
             observer.start()
         except Exception:  # noqa: BLE001 —— 打开句柄失败等竞态：不阻塞 lifespan
@@ -108,13 +112,19 @@ class WatchService:
             return
         for root in valid:
             self._watches[root] = self._observer.schedule(_Handler(self), root, recursive=True)
+            self._active_roots.add(root_key(root))
         logger.info("watch roots added: %s", valid)
 
     def remove_root(self, root: str) -> None:
-        """移除监听根（扫描位置管理：remove/toggle off 时停止监听，不触碰已索引数据）。"""
+        """移除监听根（扫描位置管理：remove/toggle off 时停止监听，不触碰已索引数据）。
+
+        同时从 _active_roots 移除——已入缓冲的事件在真正执行前会再次校验
+        （收尾 2：remove/toggle 后未来事件与已缓冲事件一律 discard）。
+        """
         from omnisearch.common.utils.paths import canonical_root
 
         key = canonical_root(root)
+        self._active_roots.discard(root_key(key))
         watch = self._watches.pop(key, None)
         if watch is not None and self._observer is not None:
             try:
@@ -140,6 +150,7 @@ class WatchService:
                 self._timer.cancel()
                 self._timer = None
             self._watches.clear()
+            self._active_roots.clear()
         if self._observer:
             self._observer.stop()
             self._observer.join(timeout=5)
@@ -179,11 +190,20 @@ class WatchService:
             self._moved.clear()
             self._timer = None
 
+        # 收尾 2：事件真正执行前校验 root 状态——remove/toggle 后已缓冲事件 discard，
+        # 不影响仍 active 的 sibling root
+        active = set(self._active_roots)
+
+        def root_active_for(path: str) -> bool:
+            return any(root_covers(path, key) for key in active)
+
         changes: list[str] = []
         deletes: list[str] = []
         for path, kinds in pending.items():
             if _CREATED in kinds and _DELETED in kinds:
                 continue  # CREATE + DELETE → 忽略
+            if not root_active_for(path):
+                continue  # root 已移除/禁用 → discard
             if _DELETED in kinds:
                 deletes.append(path)
             else:
@@ -194,4 +214,5 @@ class WatchService:
         if deletes:
             self._on_deleted(deletes)
         for src, dest in moved:
-            self._on_renamed(src, dest)
+            if root_active_for(src):  # src 所属 root 仍 active 才处理 rename
+                self._on_renamed(src, dest)
