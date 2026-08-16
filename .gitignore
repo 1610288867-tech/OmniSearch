@@ -23,10 +23,12 @@ dev-data/
 # Qdrant Sidecar 二进制（按需放置，不入库）
 qdrant/bin/
 
-# ---- 编辑器 / 本地配置 ----
+# ---- 编辑器 / AI 工具（不入库，本地使用）----
 .vscode/
 .idea/
-# Claude Code：本地偏好不入库（skills/ 项目共享资产保留入库）
-.claude/settings.local.json
-# 第三方 skill 的工具副本（与 .claude/skills 重复，不入库）
+# Claude Code 目录（本地偏好 + skill，不入库）
+.claude/
+# 第三方 skill 的工具副本
 .agents/
+# skill 锁定文件（AI 工具生成）
+skills-lock.json

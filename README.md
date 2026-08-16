@@ -112,9 +112,6 @@ cd desktop && npx vitest run
 
 # 类型检查（renderer + electron 双 tsconfig）
 cd desktop && npm run typecheck
-
-# 项目级统一验证（四进程 + E2E + Electron GUI + 清理，输出 PASS/FAIL）
-# 在 Claude Code 中：/verify-omnisearch
 ```
 
 ## 文档
