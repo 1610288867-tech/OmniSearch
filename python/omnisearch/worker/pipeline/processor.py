@@ -31,14 +31,15 @@ from omnisearch.worker.pipeline.ocr import OcrError, normalize_ocr_text, ocr_ima
 logger = logging.getLogger("omnisearch.worker.pipeline")
 
 
-def _resolve_reuse(db: Database, file_id: int, hash_value: str) -> dict | None:
+def _resolve_reuse(db: Database, file_id: int, hash_value: str, file_type: str) -> dict | None:
     """判定 AI 结果复用（P2.2 §五）：
 
     - 同 file_id 的 content_hash 相同 **且 AI 产物完整** → {'kind': 'same_file'}（touch/重扫：跳过 AI）
       完整性：所有源类型 chunk 存在且 embedding_status 全 SUCCESS；
       **缺失/FAILED（如 embedding 失败）→ 不能因 hash 相同跳过**（P2.3 一致性回归）——
       MVP 无 stage retry → 安全完整重新处理。
-    - 其他文件（含 is_deleted=1 的关闭期删除源）content_hash 相同 → {'kind': 'clone', 'src_id'}
+    - 其他文件（**同 file_type** + 同 hash + **AI 产物完整**，含 is_deleted=1 的关闭期删除源）
+      → {'kind': 'clone', 'src_id'}——源不完整（embedding FAILED 等）不选（防跨类型/跨完整性污染）
     - 无 → None（正常 pipeline）
     """
     with db.connect() as c:
@@ -46,10 +47,10 @@ def _resolve_reuse(db: Database, file_id: int, hash_value: str) -> dict | None:
         if row and row["content_hash"] == hash_value and _ai_complete(c, file_id, row["file_type"]):
             return {"kind": "same_file"}
         src = c.execute(
-            "SELECT id FROM files WHERE content_hash = ? AND id <> ? ORDER BY id LIMIT 1",
-            (hash_value, file_id),
+            "SELECT id FROM files WHERE content_hash = ? AND id <> ? AND file_type = ? ORDER BY id LIMIT 1",
+            (hash_value, file_id, file_type),
         ).fetchone()
-        if src:
+        if src and _ai_complete(c, src["id"], file_type):
             return {"kind": "clone", "src_id": src["id"]}
     return None
 
@@ -87,13 +88,15 @@ def _clone_ai_results(
     file_id: int,
     src_id: int,
     hash_value: str,
+    embedder: EmbeddingProvider | None,
     vector_store: VectorStore | None,
-) -> None:
+) -> bool:
     """复用源文件 AI 产物到新 file_id（复制/跨路径移动，P2.2 §五 D/E）。
 
-    顺序（ADR-007）：读旧 vectors（事务外）→ Qdrant 先 upsert 新 point_id（wait=true，
-    失败 → 抛异常，无 SQLite 半成品）→ 短事务复制 ocr_text + chunks（embedding_status
-    按实际向量是否复制成功）。元数据（path/filename/mtime/exif 等）永不复制。
+    顺序（ADR-007 + 审查修正）：读旧 vectors（事务外）→ Qdrant 先 upsert 新 point_id
+    （wait=true，失败 → 抛异常，无 SQLite 半成品）→ **短事务先 DELETE 目标旧产物再 INSERT**
+    （§11.5 替换模式，防 UNIQUE 冲突与旧 FTS 残留）→ 尾部补向量（PENDING chunk 经
+    _embed_file_chunks 补齐，防止 PENDING 成为终态）。元数据（path/filename/mtime/exif）永不复制。
     """
     with db.connect() as c:
         src_chunks = c.execute(
@@ -109,20 +112,23 @@ def _clone_ai_results(
         # 源无 AI 产物（从未处理）→ 无法复用：正常 pipeline（调用方继续处理）
         return False
 
-    # 1) 读旧 vectors（Qdrant，事务外）→ 组装新 point_id 的 points
-    old_ids = [
-        point_id(src_id, r["source_type"], r["chunk_index"])
-        for r in src_chunks
-        if r["embedding_status"] == EmbeddingStatus.SUCCESS.value
-    ]
-    old_vectors = vector_store.get_vectors(old_ids) if (vector_store is not None and old_ids) else {}
+    # 1) 读旧 vectors（Qdrant，事务外）→ 组装新 point_id 的 points（point_id 每 chunk 只算一次）
+    copied: set[tuple[str, int]] = set()
     new_points: list[VectorPoint] = []
+    old_vectors = {}
+    if vector_store is not None:
+        old_ids = [
+            point_id(src_id, r["source_type"], r["chunk_index"])
+            for r in src_chunks
+            if r["embedding_status"] == EmbeddingStatus.SUCCESS.value
+        ]
+        old_vectors = vector_store.get_vectors(old_ids)
     for r in src_chunks:
         if r["embedding_status"] != EmbeddingStatus.SUCCESS.value:
             continue
         old = old_vectors.get(point_id(src_id, r["source_type"], r["chunk_index"]))
         if old is None:
-            continue  # 向量缺失 → 该 chunk 文本仍复用，embedding 保持 PENDING
+            continue  # 向量缺失 → 文本仍复用；向量由尾部 _embed_file_chunks 补齐
         vec, payload = old
         new_points.append(
             VectorPoint(
@@ -132,21 +138,19 @@ def _clone_ai_results(
                 text=payload.get("text", r["chunk_text"]),
             )
         )
+        copied.add((r["source_type"], r["chunk_index"]))
 
     # 2) Qdrant 先 upsert 新 points（wait=true）；失败 → 抛异常（无 SQLite 变更，旧文件不受影响）
     if new_points:
         vector_store.upsert_points(new_points)  # type: ignore[union-attr]
 
-    # 3) 短事务：复制文本产物 + hash + AI_DONE（embedding_status 按向量是否复制成功）
+    # 3) 短事务：DELETE 旧产物 → INSERT 复制文本 + hash + AI_DONE（§11.5 替换模式，防 UNIQUE 冲突）
     conn = db.connect()
     try:
         conn.execute("BEGIN")
+        conn.execute("DELETE FROM chunks WHERE file_id = ?", (file_id,))  # 触发器清旧 FTS
         for r in src_chunks:
-            emb = (
-                EmbeddingStatus.SUCCESS.value
-                if any(p.source_type == r["source_type"] and p.chunk_index == r["chunk_index"] for p in new_points)
-                else EmbeddingStatus.PENDING.value
-            )
+            emb = EmbeddingStatus.SUCCESS.value if (r["source_type"], r["chunk_index"]) in copied else EmbeddingStatus.PENDING.value
             conn.execute(
                 """INSERT INTO chunks (file_id, source_type, chunk_index, chunk_text,
                                        chunk_text_seg, token_count, embedding_status)
@@ -157,7 +161,9 @@ def _clone_ai_results(
         if src_ocr:
             conn.execute(
                 """INSERT INTO ocr_text (file_id, text, lang, confidence, created_at)
-                   VALUES (?, ?, ?, ?, unixepoch())""",
+                   VALUES (?, ?, ?, ?, unixepoch())
+                   ON CONFLICT(file_id) DO UPDATE SET text=excluded.text,
+                       lang=excluded.lang, confidence=excluded.confidence, created_at=unixepoch()""",
                 (file_id, src_ocr["text"], src_ocr["lang"], src_ocr["confidence"]),
             )
         conn.execute(
@@ -166,15 +172,127 @@ def _clone_ai_results(
         )
         conn.execute("COMMIT")
     except Exception:
-        conn.execute("ROLLBACK")
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
         raise
     finally:
         conn.close()
+
+    # 4) 补向量：PENDING chunk（源向量缺失/embedder 可用）→ 走共享 embedding 路径，PENDING 不成为终态
+    _embed_file_chunks(db, file_id, embedder, vector_store)
+
     logger.info(
         "AI results reused file=%d ← src=%d (hash=%s, chunks=%d, vectors=%d)",
         file_id, src_id, hash_value[:8], len(src_chunks), len(new_points),
     )
     return True
+
+
+def _try_reuse(
+    db: Database,
+    file_id: int,
+    hash_value: str,
+    embedder: EmbeddingProvider | None,
+    vector_store: VectorStore | None,
+    label: str,
+) -> bool:
+    """P2.2 复用分发（doc/image 共用，审查去重）。
+
+    返回 True = 复用路径已处理（调用方直接返回，无需正常 pipeline）。
+    - same_file：hash 相同 + AI 完整 → 校验 Qdrant 向量（**丢失/重建 → 补向量而非跳过**）→ 跳过
+    - clone：同 file_type + 同 hash + 源完整 → 复制 AI 产物（含向量，缺则补）
+    """
+    with db.connect() as c:
+        row = c.execute("SELECT content_hash, file_type FROM files WHERE id=?", (file_id,)).fetchone()
+        if row is None:
+            return False
+        reuse = _resolve_reuse(db, file_id, hash_value, row["file_type"])
+        if reuse is None:
+            return False
+        if reuse["kind"] == "same_file":
+            # Qdrant 校验：SUCCESS chunk 的 point 是否真实存在（Qdrant = 可重建索引，需能自愈）
+            missing = _missing_vectors(c, db, file_id, vector_store)
+            with db.connect() as conn:
+                conn.execute(
+                    "UPDATE files SET content_hash = ?, status = ?, updated_at = unixepoch() WHERE id = ?",
+                    (hash_value, FileStatus.AI_DONE.value, file_id),
+                )
+            if missing:
+                logger.info("%s %d unchanged, Qdrant missing %d vectors → re-embed", label, file_id, missing)
+                _reembed_file(db, file_id, embedder, vector_store)
+            else:
+                logger.info("%s %d unchanged (hash %s), AI skipped", label, file_id, hash_value[:8])
+            return True
+        return _clone_ai_results(db, file_id, reuse["src_id"], hash_value, embedder, vector_store)
+
+
+def _missing_vectors(conn, db: Database, file_id: int, vector_store: VectorStore | None) -> int:
+    """SUCCESS chunk 中 Qdrant 缺失的向量数（0 = 完整）。vector_store 不可用（FTS-only）→ 视为 0。"""
+    if vector_store is None:
+        return 0
+    ids = [
+        point_id(file_id, r["source_type"], r["chunk_index"])
+        for r in conn.execute(
+            "SELECT source_type, chunk_index FROM chunks WHERE file_id = ? AND embedding_status = 1",
+            (file_id,),
+        ).fetchall()
+    ]
+    if not ids:
+        return 0
+    return len(ids) - len(vector_store.get_vectors(ids))
+
+
+def _reembed_file(
+    db: Database,
+    file_id: int,
+    embedder: EmbeddingProvider | None,
+    vector_store: VectorStore | None,
+) -> None:
+    """重新 embedding 该文件全部 chunk（Qdrant 丢失/重建后补向量，文本产物不动，幂等覆盖）。"""
+    if embedder is None or vector_store is None:
+        return
+    with db.connect() as c:
+        rows = c.execute(
+            "SELECT id, source_type, chunk_index, chunk_text FROM chunks WHERE file_id = ?",
+            (file_id,),
+        ).fetchall()
+    if not rows:
+        return
+    chunks = [dict(r) for r in rows]
+    vectors = embedder.embed_texts([c["chunk_text"] for c in chunks], batch_size=32)
+    points = [
+        VectorPoint(
+            point_id=point_id(file_id, c["source_type"], c["chunk_index"]),
+            vector=vec, file_id=file_id,
+            source_type=c["source_type"], chunk_index=c["chunk_index"],
+            text=c["chunk_text"],
+        )
+        for c, vec in zip(chunks, vectors)
+    ]
+    vector_store.upsert_points(points)  # wait=true
+    with db.connect() as c:
+        c.executemany(
+            "UPDATE chunks SET embedding_status = ?, updated_at = unixepoch() WHERE id = ?",
+            [(EmbeddingStatus.SUCCESS.value, c["id"]) for c in chunks],
+        )
+    logger.info("re-embedded file=%d chunks=%d (Qdrant 补齐)", file_id, len(chunks))
+
+
+def _ensure_exif(db: Database, file_id: int, path: str) -> None:
+    """提取并写入新文件自身的 EXIF（clone/same_file 路径也执行——EXIF 不是被复制的 metadata，
+    而是新路径文件的独立属性；缺失则精确时间过滤会误排除副本）。"""
+    exif = extract_exif(path)
+    if exif is None:
+        return
+    with db.connect() as c:
+        c.execute(
+            """INSERT INTO exif (file_id, datetime_original, datetime_original_epoch)
+               VALUES (?, ?, ?)
+               ON CONFLICT(file_id) DO UPDATE SET
+                   datetime_original=excluded.datetime_original,
+                   datetime_original_epoch=excluded.datetime_original_epoch""",
+            (file_id, exif["datetime_original"], exif["datetime_original_epoch"]),
+        )
 
 
 def process_doc_file(
@@ -191,23 +309,13 @@ def process_doc_file(
 
     P2.2：处理前计算 content_hash → 同 file_id 内容未变 → 跳过 AI（旧产物保留）；
     同 hash 其他文件 → 复用 AI 产物（免 OCR/Caption/Embedding）。
+    hash 每次计算并写库（复用建立的前提；首次全量虽无源可复用，仍需写 hash 供后续扫描）。
     """
     hash_value = content_hash_xxh3(path)
     if hash_value is None:
         raise ValueError(f"content hash failed: {path}")  # 不可读 → task FAILED，不误复用
-    reuse = _resolve_reuse(db, file_id, hash_value)
-    if reuse is not None:
-        if reuse["kind"] == "same_file":
-            with db.connect() as c:
-                c.execute(
-                    "UPDATE files SET content_hash = ?, status = ?, updated_at = unixepoch() WHERE id = ?",
-                    (hash_value, FileStatus.AI_DONE.value, file_id),
-                )
-            logger.info("file %d unchanged (hash %s), AI skipped", file_id, hash_value[:8])
-            return
-        if _clone_ai_results(db, file_id, reuse["src_id"], hash_value, vector_store):
-            return
-        # 源无 AI 产物 → 继续正常 pipeline
+    if _try_reuse(db, file_id, hash_value, embedder, vector_store, "file"):
+        return
 
     text = extract_text(path)  # 事务外（架构 §11.5）
     chunks = chunk_text(text)  # 事务外
@@ -232,7 +340,8 @@ def process_doc_file(
         )
         conn.execute("COMMIT")
     except Exception:
-        conn.execute("ROLLBACK")
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
         raise
     finally:
         conn.close()
@@ -255,24 +364,15 @@ def process_image_file(
     - chunks(image_caption, 0)：中文标签文本（M4.4；**不进 FTS，仅 Vector**——VIEW 保证）
     - 无文字图片 → 不插 ocr chunk；caption 为空 → 不插 image_caption chunk
 
-    P2.2：同文件内容未变 → 跳过 OCR/Caption/Embedding；同 hash 其他文件 → 复用 AI 产物。
+    P2.2：同文件内容未变 → 跳过 OCR/Caption/Embedding；同 hash 其他文件 → 复用 AI 产物
+    （复用路径也会补 EXIF——新文件自身的 EXIF，防止精确时间过滤误排除副本）。
     """
     hash_value = content_hash_xxh3(path)
     if hash_value is None:
         raise ValueError(f"content hash failed: {path}")  # 不可读 → task FAILED，不误复用
-    reuse = _resolve_reuse(db, file_id, hash_value)
-    if reuse is not None:
-        if reuse["kind"] == "same_file":
-            with db.connect() as c:
-                c.execute(
-                    "UPDATE files SET content_hash = ?, status = ?, updated_at = unixepoch() WHERE id = ?",
-                    (hash_value, FileStatus.AI_DONE.value, file_id),
-                )
-            logger.info("image %d unchanged (hash %s), AI skipped", file_id, hash_value[:8])
-            return
-        if _clone_ai_results(db, file_id, reuse["src_id"], hash_value, vector_store):
-            return
-        # 源无 AI 产物 → 继续正常 pipeline
+    if _try_reuse(db, file_id, hash_value, embedder, vector_store, "image"):
+        _ensure_exif(db, file_id, path)  # 复用路径补 EXIF（same_file/clone 均幂等）
+        return
 
     result = ocr_image(path)  # 事务外（架构 §11.5；失败抛 OcrError → task FAILED）
     caption = caption_provider.caption(Path(path)) if caption_provider is not None else None

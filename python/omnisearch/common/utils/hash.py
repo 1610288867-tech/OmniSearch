@@ -17,13 +17,13 @@ logger = logging.getLogger("omnisearch.hash")
 HASH_CHUNK_SIZE = 1 << 20  # 1 MiB
 
 
-def content_hash_xxh3(path: str | Path, chunk_size: int = HASH_CHUNK_SIZE) -> str | None:
+def content_hash_xxh3(path: str | Path) -> str | None:
     """流式计算文件 xxh3_64 内容指纹；不可读 → None（调用方不得复用）。"""
     try:
         h = xxhash.xxh3_64()
         with open(path, "rb") as f:
             while True:
-                chunk = f.read(chunk_size)
+                chunk = f.read(HASH_CHUNK_SIZE)
                 if not chunk:
                     break
                 h.update(chunk)

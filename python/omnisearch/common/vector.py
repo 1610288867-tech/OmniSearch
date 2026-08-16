@@ -19,6 +19,7 @@ COLLECTION_NAME = "omnisearch"
 HNSW_M = 16
 HNSW_EF_CONSTRUCT = 128
 HNSW_EF = 64
+RETRIEVE_BATCH = 500  # get_vectors 单请求 point 数上限（防大文档单请求超限/超时）
 
 
 @dataclass(frozen=True)
@@ -123,11 +124,16 @@ class VectorStore:
         """读取既有 point 的 vector + payload（P2.2 AI 结果复用：免重新 BGE inference）。
 
         返回 {point_id: (vector, payload)}；缺失的 point 不在结果中。
+        分批（RETRIEVE_BATCH/请求）：大文档（数千 chunk）不因单请求过大/超时整体失败。
         """
         if not point_ids:
             return {}
-        hits = self._client.retrieve(collection_name=COLLECTION_NAME, ids=point_ids, with_vectors=True)
-        return {h.id: (h.vector, h.payload or {}) for h in hits}
+        out: dict[int, tuple[list[float], dict]] = {}
+        for i in range(0, len(point_ids), RETRIEVE_BATCH):
+            batch = point_ids[i : i + RETRIEVE_BATCH]
+            hits = self._client.retrieve(collection_name=COLLECTION_NAME, ids=batch, with_vectors=True)
+            out.update({h.id: (h.vector, h.payload or {}) for h in hits})
+        return out
 
     def count(self) -> int:
         return self._client.count(collection_name=COLLECTION_NAME).count

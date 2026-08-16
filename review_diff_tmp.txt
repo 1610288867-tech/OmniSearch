@@ -1,0 +1,1517 @@
+diff --git a/README.md b/README.md
+index 17e2fbc..16819e4 100644
+--- a/README.md
++++ b/README.md
+@@ -1,124 +1,85 @@
+ # OmniSearch
+ 
+-**本地 AI Hybrid Retrieval Engine** —— Everything 级文件名检索 + 自然语言查询理解 + 图片/文档内容语义理解。用一句话搜到本地任何文件。
++**本地 AI Hybrid Retrieval Engine** —— Everything 级文件名检索 + 自然语言查询理解 + 图片/文档内容语义理解，全部数据与推理留在本机。
+ 
+-> 「昨天的自由女神照片」 → QueryParser 解析出时间条件（昨天 → EXIF exact）、类型条件（照片 → image）、语义条件（自由女神 → 图片内容理解）→ Hybrid 双通道召回 → RRF 融合 → 逐条匹配原因。
++> 「昨天的自由女神照片」 → 解析出时间（昨天 → EXIF exact）、类型（照片 → image）、语义（自由女神 → 图片内容理解）→ FTS + Vector 双通道召回 → RRF 融合 → 逐条匹配原因。
+ 
+-## 三大核心亮点
+-
+-| # | 亮点 | 构成 |
+-|---|---|---|
+-| 1 | **Hybrid Search** | Metadata Filter（过滤）+ SQLite FTS5（关键词检索）+ Qdrant（语义检索）→ 加权 RRF 融合（k=60，仅 FTS+Vector 双通道）→ 逐条匹配原因 + 时间可信度标注 |
+-| 2 | **AI Worker 解耦** | FastAPI（搜索，永远轻载）与 AI 密集任务（Caption / OCR / Embedding）进程级隔离，模型缺失自动降级 |
+-| 3 | **Windows Incremental Index** | Watchdog 实时增量监听（防抖 2s / 事件合并 / RENAME 身份保留）→ NTFS USN Journal 启动恢复（P2） |
+-
+-## 技术栈
+-
+-- **桌面端**：Electron + Vue3 + Pinia + TypeScript + Vite（contextIsolation / sandbox 安全基线）
+-- **后端**：Python 3.11 + FastAPI（Router → Service → Repository 分层）
+-- **存储**：SQLite（WAL，**事实数据源**）+ FTS5（jieba 预分词中文检索）+ Qdrant Sidecar（HNSW 向量语义检索，**可重建索引**）
+-- **AI**：独立 Python Worker（ai_tasks 单机轻量持久化队列）｜PaddleOCR（zh+en）+ Chinese-CLIP 图片标签 + BGE-small-zh 语义嵌入（全部本地 ONNX CPU）
+-
+-## MVP 能力（M0–M5 全部完成 ✅）
++## 核心能力
+ 
+ | 能力 | 说明 |
+ |---|---|
+-| 全量/增量扫描 | 8 线程扫描、Watchdog 实时监听（增/改/删/重命名）、删除软标记先行 |
+-| 多扫描位置 | 任意盘符/文件夹多 Root（原生对话框选择）、重复/父子冲突拒绝、启用/禁用、移除保留已索引数据、顺序扫描进度 |
+-| USN 启动恢复（P2.1） | 关闭期文件变化启动自动恢复（USN Journal 优先，不可用自动降级增量扫描）、断点续扫 |
+-| 文件名毫秒检索 | FTS5 contentless-delete，中文 jieba 前缀查询 |
+-| 文档全文检索 | TXT / MD / PDF / DOCX → 分块 → 正文命中（含高亮片段证据） |
++| **Hybrid Search** | Metadata 过滤 + SQLite FTS5 关键词检索 + Qdrant 语义检索 → RRF 融合（k=60）→ 匹配原因 + 时间可信度标注 |
++| **AI Worker 解耦** | FastAPI（搜索，轻载）与 AI 密集任务（OCR / Caption / Embedding）进程级隔离，模型缺失自动降级 |
++| **Windows 增量索引** | Watchdog 实时监听 + USN Journal 启动恢复（P2.1）+ content_hash AI 结果复用（P2.2） |
++| 多扫描位置 | 任意盘符/文件夹多 Root，启用/禁用/移除（保留已索引数据）、顺序扫描进度 |
++| 文件名毫秒检索 | FTS5 contentless-delete，中文 jieba 预分词 |
++| 文档全文检索 | TXT / MD / PDF / DOCX → 正文命中（含高亮片段证据） |
+ | OCR 文字搜索 | 图片内文字（zh+en）→ 关键词通道（「识别到文字：New York 2026」） |
+ | 图片语义搜索 | 图片 → 中文标签（Chinese-CLIP）→ 统一 BGE 语义空间（「AI 描述：…」） |
+-| 自然语言查询 | 规则 QueryParser：今天/昨天/本周/本月/日期区间/类型/扩展名（LLM 解析为 P2） |
+-| Hybrid 融合 | 双通道并行（FTS 1s / Vector 3s 超时降级）→ 候选并集 → canonical 过滤 → RRF → 匹配原因 |
++| 自然语言查询 | 规则 QueryParser：今天/昨天/日期区间/类型/扩展名 → FilterChips 展示解析结果 |
+ | 纯过滤查询 | 「昨天的照片」「pdf」→ Metadata-only（时间 basis 排序，不参与 RRF） |
+-| 时间可信度 | EXIF=exact / mtime·ctime=fallback，逐条标注；unknown 默认排除 |
+-| 运维 | Settings（权重/topK/模型状态）、Task Dashboard（队列统计/重试）、健康检查（sqlite/qdrant/worker/semantic readiness） |
++| 时间可信度 | EXIF=exact / mtime·ctime=fallback，逐条标注 |
++| 运维 | Settings（权重/topK/模型状态）、Task Dashboard（队列统计/重试）、健康检查（sqlite/qdrant/worker/semantic） |
+ 
+-## 快速开始
++## 技术栈
+ 
+-### 环境要求
++- **桌面端**：Electron + Vue3 + Pinia + TypeScript + Vite（contextIsolation / sandbox 安全基线）
++- **后端**：Python 3.11 + FastAPI（Router → Service → Repository 分层）
++- **存储**：SQLite（WAL，**事实数据源**）+ FTS5 + Qdrant Sidecar（HNSW 语义检索，**可重建索引**）
++- **AI**：独立 Python Worker（SQLite 轻量持久化队列）｜PaddleOCR + Chinese-CLIP + BGE-small-zh（全部本地 ONNX CPU）
+ 
+-- Windows 10/11（NTFS）
+-- Python 3.11+（建议 3.12）
+-- Node.js 18+ / npm
++## 快速开始
+ 
+-### 1. 安装
++**环境**：Windows 10/11（NTFS）、Python 3.11+、Node.js 18+
+ 
+ ```bash
+-# 后端（虚拟环境 + 依赖，含 paddle 版本冻结）
+-cd python
+-python -m venv .venv
++# 1. 安装
++cd python && python -m venv .venv
+ ./.venv/Scripts/python -m pip install -e ".[dev]"
++cd ../desktop && npm install
+ 
+-# 桌面端
+-cd ../desktop
+-npm install
+-```
+-
+-### 2. 下载模型
+-
+-```bash
+-# manifest 驱动 + sha256 校验（BGE-small-zh + Chinese-CLIP + PaddleOCR，~800MB，下载到 dev-data/models）
++# 2. 下载模型（manifest 驱动 + sha256 校验，~800MB → dev-data/models）
+ python python/scripts/download_models.py
+-```
+-
+-### 3. 启动开发环境
+ 
+-```bash
+-# 方式 A：纯后端四进程（FastAPI + Worker + Qdrant Sidecar）
++# 3. 启动（A：纯后端四进程；B：完整桌面应用）
+ python python/scripts/dev.py --dev-data dev-data
+-
+-# 方式 B：完整桌面应用（Electron 自动拉起四进程；需指定 venv）
+-cd desktop
+-OMNISEARCH_PYTHON="d:/OmniSearch/python/.venv/Scripts/python.exe" OMNISEARCH_DEV_DATA="d:/OmniSearch/dev-data" npm run dev
++cd desktop && OMNISEARCH_PYTHON="<repo>/python/.venv/Scripts/python.exe" OMNISEARCH_DEV_DATA="<repo>/dev-data" npm run dev
+ ```
+ 
+-### 4. 使用
++使用：桌面 UI 搜索框输入自然语言，或直接调用 API（token 见 dev.py 启动输出）：
+ 
+ ```
+-# 添加索引目录（带 X-Omni-Token，token 见 dev.py 启动输出）
+ POST /api/v1/index/scan  {"root_paths": ["D:/photos"], "scan_type": "full"}
+-
+-# Hybrid 搜索（默认模式；mode: keyword | semantic | hybrid）
+ POST /api/v1/search {"query": "昨天的自由女神照片", "topK": 50}
+ ```
+ 
+-或直接在桌面 UI：搜索框输入自然语言 → FilterChips 展示解析结果 → 结果卡展示 RRF 分数 / 匹配原因 / 时间可信度。**模型缺失或 Qdrant 未启动时自动降级为关键词搜索**（degraded_channels 如实标注，服务不崩溃）。
++**模型缺失或 Qdrant 未启动时自动降级为关键词搜索**（degraded_channels 如实标注，服务不崩溃）。
+ 
+ ## API 概览
+ 
+ | Method | Path | 说明 |
+ |---|---|---|
+-| GET | `/health` | 就绪探针：`sqlite / qdrant / worker / semantic` 四组件 |
+-| POST | `/search` | **Hybrid Search**：`{query, topK, mode, stages?}` → `{parsed, results, total, latency_ms, degraded_channels}` |
+-| POST | `/search/semantic` | 语义通道独立（兼容） |
++| GET | `/health` | 就绪探针（sqlite / qdrant / worker / semantic） |
++| POST | `/search` | Hybrid Search：`{query, topK, mode}` → `{parsed, results, latency_ms, degraded_channels}` |
+ | POST | `/index/scan` · GET `/index/status` | 扫描作业 / 进度 |
+-| GET/POST | `/index/roots` · `add`/`remove`/`toggle` | 扫描位置管理（多 Root：文件夹/盘符、重复与父子冲突拒绝） |
+-| GET/PUT | `/settings` | 搜索模式 / w_kw·w_sem / topK / 索引目录 / 模型状态 / 存储 |
+-| GET | `/task/status` · `/task/failed` | 任务队列统计 / 失败明细 |
+-| POST | `/task/{id}/retry` · `/task/{id}/reindex` | 重试（超限 → 409）/ 重建任务 |
++| GET/POST | `/index/roots` · add/remove/toggle | 扫描位置管理（多 Root） |
++| GET/PUT | `/settings` | 搜索模式 / 权重 / topK / 模型状态 / 存储 |
++| GET | `/task/status` · `/task/failed` · POST `/task/{id}/retry` | 任务队列 / 重试 |
+ 
+-详细请求/响应字段见 [docs/api.md](docs/api.md)。
++详细字段见 [docs/api.md](docs/api.md)。
+ 
+ ## 测试
+ 
+ ```bash
+-# 后端（192 项：扫描/FTS/OCR/语义/Hybrid/降级/时间/任务/Health…）
+-cd python && ./.venv/Scripts/python -m pytest
+-
+-# 前端（18 项：store 状态机 / 页面渲染）
+-cd desktop && npx vitest run
+-
+-# 类型检查（renderer + electron 双 tsconfig）
+-cd desktop && npm run typecheck
++cd python && ./.venv/Scripts/python -m pytest    # 259 项（扫描/FTS/OCR/语义/Hybrid/降级/USN/hash 复用…）
++cd desktop && npx vitest run                     # 23 项（store / 页面渲染）
++cd desktop && npm run typecheck                  # renderer + electron 双 tsconfig
+ ```
+ 
+ ## 文档
+ 
+-- 📐 [架构设计](docs/architecture.md) —— 唯一架构权威文档（18 章 + Final Consistency Checklist，MVP/P2/P3 边界）
+-- 📝 [决策记录](docs/adr/) —— ADR-001~005（Worker 进程模型 / SQLite 队列 / Hybrid RRF / Caption 选型冻结 / FTS 模式与 point_id 冻结）
++- 📐 [架构设计](docs/architecture.md) —— 唯一架构权威文档（18 章 + Final Consistency Checklist）
++- 📝 [决策记录](docs/adr/) —— ADR-001~007（Worker 进程 / SQLite 队列 / Hybrid RRF / Caption 冻结 / FTS 与 point_id / USN 恢复 / hash 复用）
+ - 📡 [API 文档](docs/api.md) —— 端点与字段明细（与前后端契约对齐）
+ 
+ ## 目录结构
+@@ -128,19 +89,13 @@ OmniSearch/
+ ├── desktop/          # Electron + Vue3（main / preload / renderer / shared 契约）
+ ├── python/
+ │   ├── omnisearch/
+-│   │   ├── common/   # 唯一共享层（SQLite 门面 / 分词 / 时间 / 向量 / embedding）
++│   │   ├── common/   # 唯一共享层（SQLite 门面 / 分词 / 时间 / 向量 / hash）
+ │   │   ├── server/   # FastAPI（api / service / repository / database migrations）
+ │   │   └── worker/   # AI Worker（pipeline / providers / task 队列）
+-│   ├── scripts/      # dev.py（四进程拉起）/ download_models.py / benchmark.py / e2e_m5.py
+-│   └── tests/        # pytest（192 项）
++│   ├── scripts/      # dev.py / download_models.py / benchmark.py / e2e_p21.py / e2e_p22.py
++│   └── tests/        # pytest（259 项）
+ ├── docs/             # architecture.md + adr/ + api.md
+-├── models/           # 模型 manifest.json（sha256 校验驱动下载；模型本体在 dev-data，不入库）
+-├── qdrant/           # Sidecar 配置（qdrant.production.yaml；二进制按需放置，不入库）
+-└── dev-data/         # 开发期数据（db/qdrant/logs/models，.gitignore 排除，可重建）
++├── models/           # 模型 manifest.json（模型本体在 dev-data，不入库）
++├── qdrant/           # Sidecar 配置（二进制按需放置，不入库）
++└── dev-data/         # 开发期数据（.gitignore 排除，可重建）
+ ```
+-
+-## 阶段规划
+-
+-- **Phase 1 — MVP（完成 ✅）**：M0 骨架 → M1 扫描+文件名搜索 → M2 文档全文 → M3 OCR → M4 语义搜索 → M5 Hybrid+产品化（+ 最终收口：timeout 语义 / QueryParser 边界 / Metadata-only / readiness / deadline / 验证清理）
+-- **Phase 2 — 工程增强**：**P2.1 USN Journal 启动恢复 + 断点续扫（已完成 ✅）**；后续：content_hash 复用、Worker 自动重试/优雅退出、崩溃自愈、本地 LLM Query Parser、Query 缓存、缩略图缓存、托盘+快捷键、打包发布
+-- **Phase 3 — Future Extensions**：云端 VLM、以图搜图（CLIP）、人脸识别、语音搜索、视频理解、插件系统、跨设备同步
+diff --git a/docs/adr/adr-007-content-hash-reuse.md b/docs/adr/adr-007-content-hash-reuse.md
+new file mode 100644
+index 0000000..5ccc54d
+--- /dev/null
++++ b/docs/adr/adr-007-content-hash-reuse.md
+@@ -0,0 +1,75 @@
++# ADR-007：content_hash AI 结果复用（P2.2）
++
++- 状态：Accepted（P2.2）
++- 日期：2026-08-16
++
++## Context
++
++文件移动/复制/rename/重扫时，即使内容未变也会重新执行 OCR/Caption/Embedding，
++造成不必要的 AI 计算（CPU 密集）。引入 content_hash：内容相同 → 复用已有 AI 产物。
++
++## 决策
++
++### 1. 为什么 hash / 为什么 xxh3
++
++- 架构 §7.1 已预留 `files.content_hash` 列（P2 用途）——无需迁移
++- **xxh3_64**：流式计算（1MB chunk，不整载内存）、~2.4GB/s（实测）、
++  内容相同 → 相同 hash；内容不同 → 极高概率不同（128 位雪崩特性）
++- 不自行改 SHA256：xxh3 是架构既定选择（与 point_id 同一算法族），防碰撞需求
++  （恶意构造碰撞）不在本地搜索场景威胁模型内
++
++### 2. 什么时候计算 hash
++
++不在扫描（FastAPI）对所有文件算 hash；**只在 Worker 的 index_file pipeline 内**计算：
++- 处理前：`content_hash_xxh3(path)`（流式，事务外）
++- 判定复用（`_resolve_reuse`）→ 复用 / 正常处理
++- 正常处理完成时（短事务内）写回 `files.content_hash`
++
++模型文件不参与 hash reuse（独立资产，manifest 管理）。
++
++### 3. 复用规则
++
++| 场景 | 行为 |
++|---|---|
++| A 同 file_id 内容未变（touch/重扫触发） | 跳过全部 AI，旧 chunks/embedding 保留，status=AI_DONE |
++| B/C rename / 移动（file_id 保留） | 直接复用（MVP rename 语义已保留 chunks——不额外处理） |
++| D 复制（新 file_id，同 hash） | 复用 ocr_text + chunks（文本/seg/token_count）+ embedding |
++| E 跨路径移动（关闭期 delete+create，同 hash） | 复用旧（含 is_deleted=1 源）AI 产物，**新 file_id**（不恢复旧 id） |
++
++### 4. Qdrant point_id 处理（关键）
++
++禁止直接复制旧 point_id：
++```
++旧: point_id = xxh3_64("100:ocr:0")
++新: point_id = xxh3_64("200:ocr:0")   ← 必须按新 logical_key 重新计算
++```
++流程：读旧 point 的 vector+payload（VectorStore.get_vectors）→ 按新 logical_key 计算新 point_id
++→ upsert（wait=true）→ 成功后短事务复制 chunks（embedding_status=SUCCESS）。免 BGE inference。
++
++顺序：Qdrant 先 upsert → SQLite 复制事务。Qdrant 失败 → 抛异常（task FAILED，无 SQLite 半成品；
++orphan point 由三元组校验防污染）；事务失败 → 回滚（旧文件不受影响）。
++
++### 5. 复用范围与禁止
++
++允许：ocr_text、chunks.chunk_text/seg/token_count、image_caption、embedding vectors、embedding_status。
++禁止：file_id/path/filename/dir_path/mtime/ctime/exif 等 metadata（永远属于新 files 记录）。
++
++### 6. Embedding 兼容性
++
++MVP 单模型（BGE-small-zh）：所有 embedding_status=SUCCESS 的 chunk 均为当前模型产物，
++可直接复用。若未来换模型（P2 模型升级重建）：只复用文本，重新 embedding
++（当前实现不引入模型 registry——最小实现满足现状）。
++
++### 7. 失败与一致性
++
++- hash 计算失败（不可读）→ 抛异常 → task FAILED（不得误复用）
++- 复用事务/Qdrant 失败 → task FAILED，旧文件产物完整保留
++- 保持 reindex 一致性（§11.5）：新文件不得产生半成品复用结果
++
++## 后果
++
++- 正面：复制/移动/重扫场景免 OCR/Caption/Embedding（实测 copy 图片任务数不变、
++  向量复制而非重算）；hash 计算成本 ~2.4GB/s 可忽略
++- 限制：首次处理仍全量 AI（hash 建立后生效）；deleted 源复用依赖 chunks 保留
++  （删除不删 chunks ✓）
++- 不做：不做内容去重合并（同 hash 多文件各自保留独立 file_id/索引），不做 hash 缓存
+diff --git a/docs/architecture.md b/docs/architecture.md
+index cf256c1..27d8df8 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -813,7 +813,18 @@ OmniSearch/
+ - 测试：pytest 逻辑层 27 项（FakeReader 注入）+ 真实 Windows E2E（fallback 路径 5/5 PASS；
+   真实 USN 读取需管理员，标记 SKIPPED）
+ 
+-P2.1 后续（未实现）：hash 复用 AI 结果｜Worker 自动重试/任务取消/启动恢复｜优雅退出 drain｜崩溃自愈｜托盘+全局快捷键｜**Local LLM Query Parser（可选增强）**｜模型版本升级与重建｜每日对账｜缩略图缓存｜Qdrant payload 冗余过滤优化｜Benchmark 调优（HNSW/batch_size/批量参数）｜PyInstaller + electron-builder 打包。
++**P2.2 已完成（2026-08-16）：content_hash AI 结果复用**（ADR-007）。
++
++- hash：xxh3_64 流式计算（1MB chunk，实测 ~2.4GB/s），Worker pipeline 内计算并写回
++  files.content_hash（架构 §7.1 预留列，无需迁移）
++- 复用规则：同 file_id 内容未变（touch/重扫）→ 跳过全部 AI；复制/跨路径移动（同 hash，
++  含 is_deleted=1 源）→ 复用 ocr_text + chunks + embedding；rename（file_id 保留）天然复用
++- Qdrant：读旧 vector → 按新 logical_key 重新计算 point_id → upsert（wait=true）→ 成功后
++  短事务复制 chunks（embedding_status=SUCCESS）——免 BGE inference；禁止直接复制旧 point_id
++- 失败一致性：hash/Qdrant/事务失败 → task FAILED，旧文件产物完整保留（reindex 一致性 §11.5）
++- 测试：pytest 19 项（A-G 矩阵）+ 真实 Windows E2E（rename/copy/modify 全链路 PASS）
++
++P2.2 后续（未实现）：Worker 自动重试/任务取消/启动恢复｜优雅退出 drain｜崩溃自愈｜托盘+全局快捷键｜**Local LLM Query Parser（可选增强）**｜模型版本升级与重建｜每日对账｜缩略图缓存｜Qdrant payload 冗余过滤优化｜Benchmark 调优（HNSW/batch_size/批量参数）｜PyInstaller + electron-builder 打包。
+ 
+ ## 15.3 Phase 3 — Future Extensions（仅记录）
+ 
+diff --git a/python/omnisearch/common/utils/hash.py b/python/omnisearch/common/utils/hash.py
+new file mode 100644
+index 0000000..8c4bbfe
+--- /dev/null
++++ b/python/omnisearch/common/utils/hash.py
+@@ -0,0 +1,33 @@
++"""content_hash —— xxh3_64 内容指纹（P2.2：AI 结果复用，architecture.md §7.1 预留列）。
++
++- 流式读取（1MB chunk），不将超大文件一次性载入内存（Windows-safe）
++- 内容相同 → 相同 hash；内容不同 → 极高概率不同（xxh3_64 128 位雪崩）
++- 计算失败（不可读等）→ 返回 None：调用方不得据此复用 AI 产物
++- 模型文件不参与 hash reuse（模型是独立资产，由 manifest 管理）
++"""
++from __future__ import annotations
++
++import logging
++from pathlib import Path
++
++import xxhash
++
++logger = logging.getLogger("omnisearch.hash")
++
++HASH_CHUNK_SIZE = 1 << 20  # 1 MiB
++
++
++def content_hash_xxh3(path: str | Path, chunk_size: int = HASH_CHUNK_SIZE) -> str | None:
++    """流式计算文件 xxh3_64 内容指纹；不可读 → None（调用方不得复用）。"""
++    try:
++        h = xxhash.xxh3_64()
++        with open(path, "rb") as f:
++            while True:
++                chunk = f.read(chunk_size)
++                if not chunk:
++                    break
++                h.update(chunk)
++        return h.hexdigest()
++    except OSError as exc:
++        logger.warning("content hash failed %s: %s", path, exc)
++        return None
+diff --git a/python/omnisearch/common/vector.py b/python/omnisearch/common/vector.py
+index 7b3a0d3..bdfa229 100644
+--- a/python/omnisearch/common/vector.py
++++ b/python/omnisearch/common/vector.py
+@@ -119,5 +119,15 @@ class VectorStore:
+         if point_ids:
+             self._client.delete(collection_name=COLLECTION_NAME, points_selector=point_ids, wait=True)
+ 
++    def get_vectors(self, point_ids: list[int]) -> dict[int, tuple[list[float], dict]]:
++        """读取既有 point 的 vector + payload（P2.2 AI 结果复用：免重新 BGE inference）。
++
++        返回 {point_id: (vector, payload)}；缺失的 point 不在结果中。
++        """
++        if not point_ids:
++            return {}
++        hits = self._client.retrieve(collection_name=COLLECTION_NAME, ids=point_ids, with_vectors=True)
++        return {h.id: (h.vector, h.payload or {}) for h in hits}
++
+     def count(self) -> int:
+         return self._client.count(collection_name=COLLECTION_NAME).count
+diff --git a/python/omnisearch/server/service/index.py b/python/omnisearch/server/service/index.py
+index f25f1f0..a10afd6 100644
+--- a/python/omnisearch/server/service/index.py
++++ b/python/omnisearch/server/service/index.py
+@@ -269,16 +269,55 @@ class IndexService:
+         self._fts.delete(file_id)
+ 
+     def handle_rename(self, src: str, dst: str) -> None:
+-        """RENAME 文件身份规则（architecture.md §11.4）。"""
++        """RENAME 文件身份规则（architecture.md §11.4）。
++
++        P2.2 修复：Windows watchdog 的 rename 常伴生 created(dst) 事件——若该事件先于
++        moved 被 flush，会在 dst 路径留下「同一文件的假记录」（stat 与 src 相同）。
++        此时视为 rename（合并假记录，保留 src file_id + AI 产物），而非真 conflict
++        （dst 为不同文件时才 rescan both）。
++        """
+         src = normalize(src)
+         dst = normalize(dst)
+         src_row = self._files.get_by_path(src)
+         dst_row = self._files.get_by_path(dst)
+         if dst_row and not dst_row["is_deleted"]:
+-            # conflict：不自动覆盖、不删除目标记录——重新扫描 source + target
+-            logger.warning("rename conflict src=%s dst=%s → rescan both", src, dst)
+-            self.handle_changes([src, dst])
+-            return
++            # 合并判定（假 conflict）：stat 相同（rename 伴生 created 的同一文件）
++            # **且 dst 无 AI 产物**——有产物说明 dst 是真实处理过的文件，绝不合并（真 conflict）
++            same_file = (
++                src_row is not None
++                and dst_row["mtime_ns"] == src_row["mtime_ns"]
++                and dst_row["size_bytes"] == src_row["size_bytes"]
++            )
++            if same_file:
++                with self._db.connect() as c:
++                    n_chunks = c.execute(
++                        "SELECT count(*) n FROM chunks WHERE file_id=?", (dst_row["id"],)
++                    ).fetchone()["n"]
++                if n_chunks > 0:
++                    same_file = False
++            if same_file:
++                # 假 conflict：dst 行是 rename 伴生 created 的同一文件 → 物理删除假记录（含 FTS），走正常 rename
++                logger.info("rename merged (watchdog created artifact) src=%s dst=%s", src, dst)
++                conn = self._db.connect()
++                try:
++                    conn.execute("BEGIN")
++                    conn.execute("DELETE FROM chunks WHERE file_id=?", (dst_row["id"],))
++                    conn.execute("DELETE FROM ocr_text WHERE file_id=?", (dst_row["id"],))
++                    conn.execute("DELETE FROM exif WHERE file_id=?", (dst_row["id"],))
++                    self._fts.delete(dst_row["id"], conn=conn)
++                    conn.execute("DELETE FROM files WHERE id=?", (dst_row["id"],))
++                    conn.execute("COMMIT")
++                except Exception:
++                    conn.execute("ROLLBACK")
++                    raise
++                finally:
++                    conn.close()
++                dst_row = None
++            else:
++                # 真 conflict：不自动覆盖、不删除目标记录——重新扫描 source + target
++                logger.warning("rename conflict src=%s dst=%s → rescan both", src, dst)
++                self.handle_changes([src, dst])
++                return
+         if src_row is None:
+             self.handle_changes([dst])
+             return
+diff --git a/python/omnisearch/worker/pipeline/processor.py b/python/omnisearch/worker/pipeline/processor.py
+index d872c43..343649c 100644
+--- a/python/omnisearch/worker/pipeline/processor.py
++++ b/python/omnisearch/worker/pipeline/processor.py
+@@ -1,9 +1,15 @@
+-"""文档/图片处理（M2 doc + M3 ocr：architecture.md §10.3/§11.5 reindex 一致性）。
++"""文档/图片处理（M2 doc + M3 ocr + P2.2 hash 复用：architecture.md §10.3/§11.5）。
+ 
+ 流程：提取/OCR → 切分 → 全部在 SQLite 事务外（内存完成）→ 完整成功后单个短事务
+ （DELETE old chunks + INSERT new chunks + FTS 触发器联动 + ocr_text 更新 + files.status=AI_DONE）。
+ 任一阶段失败 → 抛异常（旧 chunks/FTS 保留，task=FAILED）。
+ 「重新索引失败时，旧搜索能力必须保持可用。」
++
++P2.2 content_hash AI 结果复用（ADR-007）：
++- 处理前流式计算 xxh3_64；同 file_id 内容未变（touch/重扫）→ 跳过全部 AI，保留旧产物
++- 同 hash 其他文件（复制/跨路径移动）→ 复用 ocr_text/chunks/embedding 文本数据 +
++  Qdrant 向量按「新 logical_key → 新 point_id」复制（禁止直接复制旧 point_id，免 BGE inference）
++- hash 计算失败 → 抛异常（task FAILED，不得误复用）；元数据（path/filename/mtime 等）永不复制
+ """
+ from __future__ import annotations
+ 
+@@ -13,6 +19,7 @@ from pathlib import Path
+ from omnisearch.common.database import Database
+ from omnisearch.common.embedding import EmbeddingProvider
+ from omnisearch.common.models import EmbeddingStatus, FileStatus, SourceType
++from omnisearch.common.utils.hash import content_hash_xxh3
+ from omnisearch.common.utils.point_id import point_id
+ from omnisearch.common.utils.seg import seg_text
+ from omnisearch.common.vector import VectorPoint, VectorStore
+@@ -24,6 +31,152 @@ from omnisearch.worker.pipeline.ocr import OcrError, normalize_ocr_text, ocr_ima
+ logger = logging.getLogger("omnisearch.worker.pipeline")
+ 
+ 
++def _resolve_reuse(db: Database, file_id: int, hash_value: str) -> dict | None:
++    """判定 AI 结果复用（P2.2 §五）：
++
++    - 同 file_id 的 content_hash 相同 **且 AI 产物完整** → {'kind': 'same_file'}（touch/重扫：跳过 AI）
++      完整性：所有源类型 chunk 存在且 embedding_status 全 SUCCESS；
++      **缺失/FAILED（如 embedding 失败）→ 不能因 hash 相同跳过**（P2.3 一致性回归）——
++      MVP 无 stage retry → 安全完整重新处理。
++    - 其他文件（含 is_deleted=1 的关闭期删除源）content_hash 相同 → {'kind': 'clone', 'src_id'}
++    - 无 → None（正常 pipeline）
++    """
++    with db.connect() as c:
++        row = c.execute("SELECT content_hash, file_type FROM files WHERE id=?", (file_id,)).fetchone()
++        if row and row["content_hash"] == hash_value and _ai_complete(c, file_id, row["file_type"]):
++            return {"kind": "same_file"}
++        src = c.execute(
++            "SELECT id FROM files WHERE content_hash = ? AND id <> ? ORDER BY id LIMIT 1",
++            (hash_value, file_id),
++        ).fetchone()
++        if src:
++            return {"kind": "clone", "src_id": src["id"]}
++    return None
++
++
++def _ai_complete(conn, file_id: int, file_type: str) -> bool:
++    """AI 产物完整性判定（P2.2 一致性）：该文件已有的每个 AI chunk 的 embedding 全部 SUCCESS，
++    且至少有一个源类型产物（doc 需 doc_chunk；image 需 ocr 或 image_caption 任一）。
++
++    任一 chunk embedding_status=FAILED/PENDING，或源类型完全缺失 → False（不得因 hash 相同跳过）。
++    """
++    rows = conn.execute(
++        """SELECT source_type, count(*) AS n,
++                  sum(CASE WHEN embedding_status = 1 THEN 1 ELSE 0 END) AS ok
++           FROM chunks WHERE file_id = ? GROUP BY source_type""",
++        (file_id,),
++    ).fetchall()
++    if not rows:
++        return False  # 无任何 AI 产物
++    by_type = {r["source_type"]: (r["n"], r["ok"]) for r in rows}
++    if file_type == "doc":
++        n, ok = by_type.get(SourceType.DOC_CHUNK.value, (0, 0))
++        return n > 0 and ok == n
++    # image：OCR 必须已执行（ocr_text 行存在——无文字图片也有行，区分「合法无文字」与「OCR 缺失/FAILED」）
++    # + 至少一个 AI chunk（ocr / image_caption）且全部 SUCCESS
++    ocr_done = conn.execute("SELECT 1 FROM ocr_text WHERE file_id = ?", (file_id,)).fetchone() is not None
++    if not ocr_done:
++        return False
++    n = sum(by_type.get(st, (0, 0))[0] for st in (SourceType.OCR.value, SourceType.IMAGE_CAPTION.value))
++    ok = sum(by_type.get(st, (0, 0))[1] for st in (SourceType.OCR.value, SourceType.IMAGE_CAPTION.value))
++    return n > 0 and ok == n
++
++
++def _clone_ai_results(
++    db: Database,
++    file_id: int,
++    src_id: int,
++    hash_value: str,
++    vector_store: VectorStore | None,
++) -> None:
++    """复用源文件 AI 产物到新 file_id（复制/跨路径移动，P2.2 §五 D/E）。
++
++    顺序（ADR-007）：读旧 vectors（事务外）→ Qdrant 先 upsert 新 point_id（wait=true，
++    失败 → 抛异常，无 SQLite 半成品）→ 短事务复制 ocr_text + chunks（embedding_status
++    按实际向量是否复制成功）。元数据（path/filename/mtime/exif 等）永不复制。
++    """
++    with db.connect() as c:
++        src_chunks = c.execute(
++            """SELECT source_type, chunk_index, chunk_text, chunk_text_seg,
++                      token_count, embedding_status
++               FROM chunks WHERE file_id = ?""",
++            (src_id,),
++        ).fetchall()
++        src_ocr = c.execute(
++            "SELECT text, lang, confidence FROM ocr_text WHERE file_id = ?", (src_id,)
++        ).fetchone()
++    if not src_chunks:
++        # 源无 AI 产物（从未处理）→ 无法复用：正常 pipeline（调用方继续处理）
++        return False
++
++    # 1) 读旧 vectors（Qdrant，事务外）→ 组装新 point_id 的 points
++    old_ids = [
++        point_id(src_id, r["source_type"], r["chunk_index"])
++        for r in src_chunks
++        if r["embedding_status"] == EmbeddingStatus.SUCCESS.value
++    ]
++    old_vectors = vector_store.get_vectors(old_ids) if (vector_store is not None and old_ids) else {}
++    new_points: list[VectorPoint] = []
++    for r in src_chunks:
++        if r["embedding_status"] != EmbeddingStatus.SUCCESS.value:
++            continue
++        old = old_vectors.get(point_id(src_id, r["source_type"], r["chunk_index"]))
++        if old is None:
++            continue  # 向量缺失 → 该 chunk 文本仍复用，embedding 保持 PENDING
++        vec, payload = old
++        new_points.append(
++            VectorPoint(
++                point_id=point_id(file_id, r["source_type"], r["chunk_index"]),
++                vector=vec, file_id=file_id,
++                source_type=r["source_type"], chunk_index=r["chunk_index"],
++                text=payload.get("text", r["chunk_text"]),
++            )
++        )
++
++    # 2) Qdrant 先 upsert 新 points（wait=true）；失败 → 抛异常（无 SQLite 变更，旧文件不受影响）
++    if new_points:
++        vector_store.upsert_points(new_points)  # type: ignore[union-attr]
++
++    # 3) 短事务：复制文本产物 + hash + AI_DONE（embedding_status 按向量是否复制成功）
++    conn = db.connect()
++    try:
++        conn.execute("BEGIN")
++        for r in src_chunks:
++            emb = (
++                EmbeddingStatus.SUCCESS.value
++                if any(p.source_type == r["source_type"] and p.chunk_index == r["chunk_index"] for p in new_points)
++                else EmbeddingStatus.PENDING.value
++            )
++            conn.execute(
++                """INSERT INTO chunks (file_id, source_type, chunk_index, chunk_text,
++                                       chunk_text_seg, token_count, embedding_status)
++                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
++                (file_id, r["source_type"], r["chunk_index"], r["chunk_text"],
++                 r["chunk_text_seg"], r["token_count"], emb),
++            )
++        if src_ocr:
++            conn.execute(
++                """INSERT INTO ocr_text (file_id, text, lang, confidence, created_at)
++                   VALUES (?, ?, ?, ?, unixepoch())""",
++                (file_id, src_ocr["text"], src_ocr["lang"], src_ocr["confidence"]),
++            )
++        conn.execute(
++            "UPDATE files SET content_hash = ?, status = ?, updated_at = unixepoch() WHERE id = ?",
++            (hash_value, FileStatus.AI_DONE.value, file_id),
++        )
++        conn.execute("COMMIT")
++    except Exception:
++        conn.execute("ROLLBACK")
++        raise
++    finally:
++        conn.close()
++    logger.info(
++        "AI results reused file=%d ← src=%d (hash=%s, chunks=%d, vectors=%d)",
++        file_id, src_id, hash_value[:8], len(src_chunks), len(new_points),
++    )
++    return True
++
++
+ def process_doc_file(
+     db: Database,
+     file_id: int,
+@@ -35,7 +188,27 @@ def process_doc_file(
+ 
+     embedding 在 SQLite 事务外执行（架构 §10.2）；失败 → 状态 FAILED + 抛异常
+     （FTS 不受影响，task FAILED，旧数据保留）。
++
++    P2.2：处理前计算 content_hash → 同 file_id 内容未变 → 跳过 AI（旧产物保留）；
++    同 hash 其他文件 → 复用 AI 产物（免 OCR/Caption/Embedding）。
+     """
++    hash_value = content_hash_xxh3(path)
++    if hash_value is None:
++        raise ValueError(f"content hash failed: {path}")  # 不可读 → task FAILED，不误复用
++    reuse = _resolve_reuse(db, file_id, hash_value)
++    if reuse is not None:
++        if reuse["kind"] == "same_file":
++            with db.connect() as c:
++                c.execute(
++                    "UPDATE files SET content_hash = ?, status = ?, updated_at = unixepoch() WHERE id = ?",
++                    (hash_value, FileStatus.AI_DONE.value, file_id),
++                )
++            logger.info("file %d unchanged (hash %s), AI skipped", file_id, hash_value[:8])
++            return
++        if _clone_ai_results(db, file_id, reuse["src_id"], hash_value, vector_store):
++            return
++        # 源无 AI 产物 → 继续正常 pipeline
++
+     text = extract_text(path)  # 事务外（架构 §11.5）
+     chunks = chunk_text(text)  # 事务外
+     prepared = [(c, seg_text(c), estimate_tokens(c)) for c in chunks]
+@@ -54,8 +227,8 @@ def process_doc_file(
+             ],
+         )
+         conn.execute(
+-            "UPDATE files SET status = ?, updated_at = unixepoch() WHERE id = ?",
+-            (FileStatus.AI_DONE.value, file_id),
++            "UPDATE files SET status = ?, content_hash = ?, updated_at = unixepoch() WHERE id = ?",
++            (FileStatus.AI_DONE.value, hash_value, file_id),
+         )
+         conn.execute("COMMIT")
+     except Exception:
+@@ -81,7 +254,26 @@ def process_image_file(
+     - chunks(ocr, 0)：OCR 标准化搜索输入（FTS 触发器同步）
+     - chunks(image_caption, 0)：中文标签文本（M4.4；**不进 FTS，仅 Vector**——VIEW 保证）
+     - 无文字图片 → 不插 ocr chunk；caption 为空 → 不插 image_caption chunk
++
++    P2.2：同文件内容未变 → 跳过 OCR/Caption/Embedding；同 hash 其他文件 → 复用 AI 产物。
+     """
++    hash_value = content_hash_xxh3(path)
++    if hash_value is None:
++        raise ValueError(f"content hash failed: {path}")  # 不可读 → task FAILED，不误复用
++    reuse = _resolve_reuse(db, file_id, hash_value)
++    if reuse is not None:
++        if reuse["kind"] == "same_file":
++            with db.connect() as c:
++                c.execute(
++                    "UPDATE files SET content_hash = ?, status = ?, updated_at = unixepoch() WHERE id = ?",
++                    (hash_value, FileStatus.AI_DONE.value, file_id),
++                )
++            logger.info("image %d unchanged (hash %s), AI skipped", file_id, hash_value[:8])
++            return
++        if _clone_ai_results(db, file_id, reuse["src_id"], hash_value, vector_store):
++            return
++        # 源无 AI 产物 → 继续正常 pipeline
++
+     result = ocr_image(path)  # 事务外（架构 §11.5；失败抛 OcrError → task FAILED）
+     caption = caption_provider.caption(Path(path)) if caption_provider is not None else None
+     exif = extract_exif(path)  # 事务外；时间过滤 exact 语义（M5，§12.7）
+@@ -131,8 +323,8 @@ def process_image_file(
+                 (file_id, exif["datetime_original"], exif["datetime_original_epoch"]),
+             )
+         conn.execute(
+-            "UPDATE files SET status = ?, updated_at = unixepoch() WHERE id = ?",
+-            (FileStatus.AI_DONE.value, file_id),
++            "UPDATE files SET status = ?, content_hash = ?, updated_at = unixepoch() WHERE id = ?",
++            (FileStatus.AI_DONE.value, hash_value, file_id),
+         )
+         conn.execute("COMMIT")
+     except Exception:
+diff --git a/python/scripts/e2e_p22.py b/python/scripts/e2e_p22.py
+new file mode 100644
+index 0000000..fa2e0f1
+--- /dev/null
++++ b/python/scripts/e2e_p22.py
+@@ -0,0 +1,174 @@
++"""P2.2 真实 Windows E2E：content_hash AI 结果复用（spec §十三）。
++
++root-a/: original.txt + image.png
++1. 初次扫描 → Worker 完成 AI（OCR/Caption/Embedding）
++2. rename original.txt → AI 不重新执行（无新任务）
++3. copy image.png → copy.png → 新 file_id + 相同 hash + AI 复用（无新 inference）+ 新 point_id
++4. 修改 original → hash 变化 → AI pipeline 重新执行
++
++用法：需 dev.py 已运行（或本脚本自管理 --manage）。python python/scripts/e2e_p22.py --root dev-data
++"""
++from __future__ import annotations
++
++import argparse
++import json
++import shutil
++import sqlite3
++import subprocess
++import sys
++import time
++import urllib.request
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[2]
++E2E_ROOT = "p2-hash-test"
++
++
++def _post(url, token, path, body):
++    req = urllib.request.Request(url + path, data=json.dumps(body).encode(),
++                                 headers={"Content-Type": "application/json", "X-Omni-Token": token}, method="POST")
++    with urllib.request.urlopen(req, timeout=60) as r:
++        return json.loads(r.read().decode())
++
++
++def _get(url, token, path):
++    req = urllib.request.Request(url + path, headers={"X-Omni-Token": token})
++    with urllib.request.urlopen(req, timeout=60) as r:
++        return json.loads(r.read().decode())
++
++
++def _wait_idle(url, token, timeout_s=600):
++    deadline = time.monotonic() + timeout_s
++    while time.monotonic() < deadline:
++        st = _get(url, token, "/api/v1/task/status")
++        idx = _get(url, token, "/api/v1/index/status")
++        if st["queue_length"] == 0 and st["processing"] == 0 and not idx["running"]:
++            return st
++        time.sleep(1)
++    raise TimeoutError("not idle")
++
++
++def _make_image(path: Path, text: str) -> None:
++    from PIL import Image, ImageDraw, ImageFont
++
++    img = Image.new("RGB", (480, 320), (210, 220, 235))
++    d = ImageDraw.Draw(img)
++    font = None
++    for fp in ("C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf"):
++        if Path(fp).exists():
++            font = ImageFont.truetype(fp, 32)
++            break
++    d.rectangle([16, 16, 464, 304], outline=(30, 60, 140), width=5)
++    d.text((60, 130), text, font=font, fill=(25, 25, 70))
++    img.save(path, "PNG")
++
++
++def _hashes(db: Path) -> dict[str, str]:
++    conn = sqlite3.connect(db)
++    rows = conn.execute("SELECT path, content_hash, is_deleted FROM files").fetchall()
++    conn.close()
++    return {p: h for p, h, _ in rows}
++
++
++def main() -> None:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--url", default="http://127.0.0.1:8734")
++    ap.add_argument("--token", default="")
++    ap.add_argument("--root", default="dev-data")
++    args = ap.parse_args()
++
++    data_dir = Path(args.root).resolve()
++    root = data_dir / E2E_ROOT
++    root.mkdir(parents=True, exist_ok=True)
++    db_path = data_dir / "db" / "omnisearch.db"
++
++    # ---- 阶段 1：初次扫描 + AI 完成 ----
++    (root / "original.txt").write_text("机器学习与深度学习的关系", encoding="utf-8")
++    _make_image(root / "image.png", "New York 2026")
++    print("[1] 初次扫描...", flush=True)
++    _post(args.url, args.token, "/api/v1/index/roots/add", {"path": str(root)})
++    st = _wait_idle(args.url, args.token)
++    print(f"    初次 AI 完成: tasks={st}", flush=True)
++    n_ai_1 = st["success"]
++
++    # ---- 阶段 2：rename → AI 不重跑（hash 相同 → 复用，仅 1 次任务） ----
++    print("[2] rename original.txt → renamed.txt", flush=True)
++    (root / "renamed.txt").write_text("机器学习与深度学习的关系", encoding="utf-8")
++    (root / "original.txt").unlink()
++    time.sleep(4)  # watchdog 防抖（2s）+ 处理窗口
++    _wait_idle(args.url, args.token)
++    st2 = _get(args.url, args.token, "/api/v1/task/status")
++    n_ai_2 = st2["success"]
++    print(f"    rename 后任务数: {n_ai_1} → {n_ai_2}（期望 +1：renamed.txt 一次任务，复用 AI）", flush=True)
++
++    # ---- 阶段 3：copy image → 复用 ----
++    print("[3] copy image.png → copy.png", flush=True)
++    shutil.copy2(root / "image.png", root / "copy.png")
++    time.sleep(4)  # watchdog 防抖 + 处理
++    _wait_idle(args.url, args.token)
++    st3 = _get(args.url, args.token, "/api/v1/task/status")
++    n_ai_3 = st3["success"]
++    print(f"    copy 后任务数: {n_ai_3}（期望 +1：复制文件一次任务，无 OCR/Caption 重算）", flush=True)
++    conn = sqlite3.connect(db_path)
++    rows = conn.execute(
++        "SELECT filename, content_hash FROM files WHERE filename IN ('image.png','copy.png')"
++    ).fetchall()
++    conn.close()
++    hashes = dict(rows)
++    print(f"    hash: image.png={hashes.get('image.png')[:10] if hashes.get('image.png') else None} "
++          f"copy.png={hashes.get('copy.png')[:10] if hashes.get('copy.png') else None}（期望相同）", flush=True)
++    conn = sqlite3.connect(db_path)
++    copy_chunks = conn.execute(
++        "SELECT source_type, chunk_index, embedding_status FROM chunks WHERE file_id = "
++        "(SELECT id FROM files WHERE filename='copy.png')"
++    ).fetchall()
++    conn.close()
++    print(f"    copy.png chunks: {copy_chunks}（期望 embedding_status=1 复用）", flush=True)
++    # Qdrant 强验证：copy.png 新 point_id 存在且 vector == image.png（未重新 BGE inference）
++    import os as _os
++
++    _os.environ["OMNISEARCH_DEV_DATA"] = str(data_dir)
++    from omnisearch.common.utils.point_id import point_id
++    from omnisearch.common.vector import VectorStore
++
++    vs = VectorStore("http://127.0.0.1:6333", 512)
++    conn = sqlite3.connect(db_path)
++    ids = dict(conn.execute("SELECT filename, id FROM files WHERE filename IN ('image.png','copy.png')").fetchall())
++    conn.close()
++    vecs_ok = True
++    for st_, idx in (("ocr", 0), ("image_caption", 0)):
++        a = vs.get_vectors([point_id(ids["image.png"], st_, idx)])
++        b = vs.get_vectors([point_id(ids["copy.png"], st_, idx)])
++        same = bool(a and b and a[point_id(ids["image.png"], st_, idx)][0] == b[point_id(ids["copy.png"], st_, idx)][0])
++        vecs_ok = vecs_ok and same
++        print(f"    vector {st_}: image.png==copy.png → {same}（新 point_id 复制，向量相等）", flush=True)
++
++    # ---- 阶段 4：修改 original → 重跑 ----
++    print("[4] 修改 renamed.txt 内容", flush=True)
++    (root / "renamed.txt").write_text("完全不同的新内容关于软件架构设计", encoding="utf-8")
++    time.sleep(4)
++    _wait_idle(args.url, args.token)
++    st4 = _get(args.url, args.token, "/api/v1/task/status")
++    n_ai_4 = st4["success"]
++    print(f"    修改后任务数: {n_ai_4}（期望 +1：内容变化重新 AI）", flush=True)
++    conn = sqlite3.connect(db_path)
++    row = conn.execute("SELECT chunk_text FROM chunks WHERE file_id=(SELECT id FROM files WHERE filename='renamed.txt')").fetchone()
++    conn.close()
++    print(f"    renamed.txt 新正文: {row[0][:30] if row else None}（期望含『软件架构』）", flush=True)
++
++    ok = (
++        n_ai_2 == n_ai_1 + 1  # rename：1 次复用任务（无重新 inference）
++        and n_ai_3 == n_ai_1 + 2  # copy：1 次复用任务
++        and n_ai_4 == n_ai_1 + 3  # modify：1 次重新 AI
++        and hashes.get("image.png") == hashes.get("copy.png")
++        and all(c[2] == 1 for c in copy_chunks)
++        and vecs_ok
++        and row and "软件架构" in row[0]
++    )
++    print(f"\n=== P2.2 E2E {'PASS' if ok else 'FAIL'} ===", flush=True)
++    print(f"任务计数: 初扫={n_ai_1} rename后={n_ai_2} copy后={n_ai_3} modify后={n_ai_4}", flush=True)
++    sys.exit(0 if ok else 1)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/python/tests/test_hash_reuse.py b/python/tests/test_hash_reuse.py
+new file mode 100644
+index 0000000..6f5dbdc
+--- /dev/null
++++ b/python/tests/test_hash_reuse.py
+@@ -0,0 +1,619 @@
++"""P2.2 content_hash AI 结果复用测试（spec §十二 A-G）。
++
++- A Hash：相同/不同/大文件流式/错误
++- B-G：worker 级（process_doc_file 无模型依赖；image 路径 mock ocr/caption）
++  FakeVectorStore 记录 Qdrant 读写，验证新 point_id 复制（免 BGE inference）。
++"""
++from __future__ import annotations
++
++import os
++from pathlib import Path
++
++import pytest
++
++from omnisearch.common.database import Database
++from omnisearch.common.models import EmbeddingStatus, FileStatus, SourceType
++from omnisearch.common.utils.hash import content_hash_xxh3
++from omnisearch.common.utils.point_id import point_id
++from omnisearch.server.database.migrations.migrate import migrate
++from omnisearch.worker.pipeline import processor
++from omnisearch.worker.pipeline.processor import process_doc_file, process_image_file
++
++
++# ================= A. Hash =================
++
++def test_a1_identical_content_same_hash(tmp_path):
++    a = tmp_path / "a.txt"
++    b = tmp_path / "b.txt"
++    a.write_bytes(b"same bytes" * 100)
++    b.write_bytes(b"same bytes" * 100)
++    assert content_hash_xxh3(a) == content_hash_xxh3(b)
++
++
++def test_a2_different_content_different_hash(tmp_path):
++    a = tmp_path / "a.txt"
++    b = tmp_path / "b.txt"
++    a.write_bytes(b"content A")
++    b.write_bytes(b"content B")
++    assert content_hash_xxh3(a) != content_hash_xxh3(b)
++    # 单字节差异也应不同
++    a.write_bytes(b"content A")
++    b.write_bytes(b"content A!")
++    assert content_hash_xxh3(a) != content_hash_xxh3(b)
++
++
++def test_a3_large_file_streaming(tmp_path):
++    big = tmp_path / "big.bin"
++    with open(big, "wb") as f:
++        for _ in range(40):
++            f.write(os.urandom(1 << 20))  # 40MB（流式：不整载内存，chunk 1MB）
++    h = content_hash_xxh3(big)
++    assert h is not None and len(h) == 16
++    # 确定性：再算一次相同
++    assert content_hash_xxh3(big) == h
++
++
++def test_a4_hash_error_returns_none(tmp_path):
++    assert content_hash_xxh3(tmp_path / "missing.bin") is None
++    # 目录路径 → None
++    assert content_hash_xxh3(tmp_path) is None
++
++
++# ================= worker 环境 =================
++
++class FakeEmbedder:
++    """BGE 兼容替身：确定性向量（embedding 完成 → SUCCESS）。"""
++
++    dim = 8
++
++    def embed_texts(self, texts, batch_size=32):  # noqa: ARG002
++        return [[0.5] * 8 for _ in texts]
++
++    def embed_query(self, q):  # noqa: ARG002
++        return [0.5] * 8
++
++
++class FakeVectorStore:
++    """记录 Qdrant 读写：point_id → (vector, payload)。"""
++
++    def __init__(self):
++        self.points: dict[int, tuple[list[float], dict]] = {}
++        self.upserted: list[int] = []
++
++    def get_vectors(self, ids):
++        return {i: self.points[i] for i in ids if i in self.points}
++
++    def upsert_points(self, points):
++        self.upserted.extend(p.point_id for p in points)
++        for p in points:
++            self.points[p.point_id] = (p.vector, {"file_id": p.file_id, "source_type": p.source_type,
++                                                  "chunk_index": p.chunk_index, "text": p.text})
++
++    def search(self, _v, top_k=100):  # noqa: ARG002
++        return []
++
++    def list_keys_by_file(self, file_id):
++        return [pid for pid, (_, payload) in self.points.items() if payload.get("file_id") == file_id]
++
++    def delete_points(self, ids):
++        for i in ids:
++            self.points.pop(i, None)
++
++
++@pytest.fixture()
++def env(tmp_path):
++    db = Database(tmp_path / "t.db")
++    migrate(db)
++    vs = FakeVectorStore()
++
++    def _add_file(path: str, file_type: str = "doc", content_hash: str | None = None, status: str = "AI_DONE") -> int:
++        with db.connect() as c:
++            cur = c.execute(
++                """INSERT INTO files (path, filename, dir_path, extension, size_bytes, mtime_ns, ctime_ns,
++                                      file_type, status, content_hash)
++                   VALUES (?, ?, ?, ?, 1, 1, 1, ?, ?, ?)""",
++                (path, Path(path).name, str(Path(path).parent), Path(path).suffix.lower(),
++                 file_type, status, content_hash),
++            )
++            return cur.lastrowid
++
++    return db, vs, _add_file
++
++
++def _seed_ai(db: Database, fid: int, chunks: list[tuple[str, int, str, int]], ocr: str | None = None) -> None:
++    """预置源文件 AI 产物（chunks + ocr_text + hash）。"""
++    from omnisearch.common.utils.seg import seg_text
++
++    with db.connect() as c:
++        for source_type, idx, text, emb in chunks:
++            c.execute(
++                """INSERT INTO chunks (file_id, source_type, chunk_index, chunk_text, chunk_text_seg,
++                                       token_count, embedding_status)
++                   VALUES (?, ?, ?, ?, ?, 1, ?)""",
++                (fid, source_type, idx, text, seg_text(text), emb),
++            )
++        if ocr:
++            c.execute(
++                "INSERT INTO ocr_text (file_id, text, lang, confidence) VALUES (?, ?, 'zh+en', 0.9)",
++                (fid, ocr),
++            )
++        c.commit()
++
++
++def _seed_vector(vs: FakeVectorStore, fid: int, source_type: str, idx: int, vec: list[float] | None = None) -> None:
++    vs.points[point_id(fid, source_type, idx)] = (vec or [0.1] * 8, {"file_id": fid, "source_type": source_type,
++                                                                    "chunk_index": idx, "text": "x"})
++
++
++# ================= B. Same file =================
++
++def test_b5_unchanged_content_skips_ai(env, tmp_path, monkeypatch):
++    db, vs, add_file = env
++    p = tmp_path / "doc.txt"
++    p.write_text("原始内容", encoding="utf-8")
++    fid = add_file(str(p))  # 首次无 hash → 正常处理并写入
++    calls = {"extract": 0}
++    orig = processor.extract_text
++
++    def counting_extract(path):
++        calls["extract"] += 1
++        return orig(path)
++
++    monkeypatch.setattr(processor, "extract_text", counting_extract)
++    # 第一次正常处理
++    process_doc_file(db, fid, str(p), embedder=FakeEmbedder(), vector_store=vs)
++    assert calls["extract"] == 1
++    # 模拟 touch（mtime 变化但内容不变）→ 再次入队处理 → hash 相同 → 跳过 AI
++    os.utime(p, (os.stat(p).st_atime, os.stat(p).st_mtime + 10))
++    process_doc_file(db, fid, str(p), vector_store=vs)
++    assert calls["extract"] == 1, "内容未变不应重新提取"
++    with db.connect() as c:
++        assert c.execute("SELECT status FROM files WHERE id=?", (fid,)).fetchone()["status"] == "AI_DONE"
++
++
++def test_b6_modified_content_reprocesses(env, tmp_path, monkeypatch):
++    db, vs, add_file = env
++    p = tmp_path / "doc.txt"
++    p.write_text("v1 内容", encoding="utf-8")
++    fid = add_file(str(p))
++    calls = {"extract": 0}
++    orig = processor.extract_text
++
++    def counting_extract(path):
++        calls["extract"] += 1
++        return orig(path)
++
++    monkeypatch.setattr(processor, "extract_text", counting_extract)
++    process_doc_file(db, fid, str(p), vector_store=vs)
++    p.write_text("v2 内容不同了", encoding="utf-8")  # 内容变化
++    process_doc_file(db, fid, str(p), vector_store=vs)
++    assert calls["extract"] == 2, "内容变化应重新处理"
++    with db.connect() as c:
++        row = c.execute("SELECT chunk_text FROM chunks WHERE file_id=?", (fid,)).fetchone()
++        assert "v2" in row["chunk_text"]
++
++
++# ================= C. Rename =================
++
++def test_c7_rename_preserves_ai_results(env, tmp_path):
++    """RENAME：file_id 保留 → chunks/ocr/AI 产物保留（MVP rename 语义）。"""
++    db, vs, add_file = env
++    p = tmp_path / "old-name.txt"
++    p.write_text("改名内容", encoding="utf-8")
++    fid = add_file(str(p))
++    process_doc_file(db, fid, str(p), vector_store=vs)
++    dst = tmp_path / "new-name.txt"
++    dst.write_text("改名内容", encoding="utf-8")
++    p.unlink()
++    # MVP rename 语义（保留 file_id）
++    with db.connect() as c:
++        c.execute("UPDATE files SET path=?, filename=?, dir_path=? WHERE id=?",
++                  (str(dst), "new-name.txt", str(tmp_path), fid))
++        c.commit()
++    assert dst.exists()
++    with db.connect() as c:
++        n = c.execute("SELECT count(*) n FROM chunks WHERE file_id=?", (fid,)).fetchone()["n"]
++        assert n > 0  # AI 产物保留
++
++
++def test_c8_rename_does_not_reembed(env, tmp_path):
++    """rename 后不重新 embedding（无新向量写入）。"""
++    db, vs, add_file = env
++    p = tmp_path / "r.txt"
++    p.write_text("内容", encoding="utf-8")
++    fid = add_file(str(p))
++    process_doc_file(db, fid, str(p), vector_store=vs)
++    before = len(vs.points)
++    dst = tmp_path / "r2.txt"
++    dst.write_text("内容", encoding="utf-8")
++    p.unlink()
++    with db.connect() as c:
++        c.execute("UPDATE files SET path=?, filename=? WHERE id=?", (str(dst), "r2.txt", fid))
++        c.commit()
++    assert len(vs.points) == before  # 无新向量（rename 不触发 AI）
++
++
++def test_c9_watchdog_rename_artifact_merged(env, tmp_path):
++    """watchdog rename 伴生 created(dst) 假记录（stat 相同）→ 合并保留 src file_id + AI 产物。
++
++    P2.2 E2E 暴露：created(dst) 先 flush 留下假行 → handle_rename 曾误判 conflict →
++    delete+create。修复：stat 相同视为同一文件，物理删除假记录，走正常 rename。
++    """
++    db, vs, add_file = env
++    p = tmp_path / "rename-me.txt"
++    p.write_text("rename 保留内容", encoding="utf-8")
++    fid = add_file(str(p))
++    process_doc_file(db, fid, str(p), vector_store=vs)
++    dst = tmp_path / "rename-done.txt"
++    dst.write_text("rename 保留内容", encoding="utf-8")
++    p.unlink()
++    # 模拟 watchdog 顺序：created(dst) 先被 flush → dst 假行（stat 与 src 相同）
++    dst_fake_id = add_file(str(dst))
++    with db.connect() as c:  # 假行的 stat 与 src 相同（同一文件）
++        c.execute("UPDATE files SET mtime_ns=(SELECT mtime_ns FROM files WHERE id=?), size_bytes=(SELECT size_bytes FROM files WHERE id=?) WHERE id=?",
++                  (fid, fid, dst_fake_id))
++        c.commit()
++    # handle_rename：应合并假记录，保留 src file_id
++    from omnisearch.server.service.index import IndexService
++
++    index = IndexService(db, __import__("omnisearch.server.repository.files", fromlist=["FileRepository"]).FileRepository(db),
++                         __import__("omnisearch.server.repository.fts", fromlist=["FtsRepository"]).FtsRepository(db),
++                         __import__("omnisearch.server.repository.jobs", fromlist=["IndexJobRepository"]).IndexJobRepository(db))
++    index.handle_rename(str(p), str(dst))
++    with db.connect() as c:
++        row = c.execute("SELECT id, path FROM files WHERE id=?", (fid,)).fetchone()
++        assert row is not None and row["path"] == str(dst)  # src file_id 保留
++        fake = c.execute("SELECT id FROM files WHERE id=?", (dst_fake_id,)).fetchone()
++        assert fake is None  # 假记录已物理删除
++        assert c.execute("SELECT count(*) n FROM chunks WHERE file_id=?", (fid,)).fetchone()["n"] == 1  # AI 产物保留
++
++
++# ================= P2.3 一致性：hash 相同但 AI 产物不完整 =================
++
++def test_p23_embedding_failed_reprocessed(env, tmp_path, monkeypatch):
++    """同一文件 hash 相同但 Embedding=FAILED → 不能跳过 → 完整重新处理 → embedding=SUCCESS。"""
++    db, vs, add_file = env
++    p = tmp_path / "doc.txt"
++    p.write_text("一致性内容", encoding="utf-8")
++    h = content_hash_xxh3(p)
++    fid = add_file(str(p), content_hash=h, status="AI_DONE")
++    # 模拟部分失败：OCR/Caption 文本成功但 Embedding=FAILED
++    _seed_ai(db, fid, [(SourceType.DOC_CHUNK.value, 0, "一致性内容", EmbeddingStatus.FAILED.value)])
++    calls = {"extract": 0}
++    orig = processor.extract_text
++
++    def counting_extract(path):
++        calls["extract"] += 1
++        return orig(path)
++
++    monkeypatch.setattr(processor, "extract_text", counting_extract)
++    process_doc_file(db, fid, str(p), embedder=FakeEmbedder(), vector_store=vs)
++    assert calls["extract"] == 1, "Embedding FAILED 不应因 hash 相同跳过 → 应重新处理"
++    with db.connect() as c:
++        row = c.execute("SELECT chunk_text, embedding_status FROM chunks WHERE file_id=?", (fid,)).fetchone()
++        assert row["embedding_status"] == EmbeddingStatus.SUCCESS.value  # 最终 embedding 完整
++        # 无 duplicate chunks（重新处理 = DELETE old + INSERT new）
++        n = c.execute("SELECT count(*) n FROM chunks WHERE file_id=?", (fid,)).fetchone()["n"]
++        assert n == 1
++
++
++def test_p23_ocr_failed_reprocessed(env, tmp_path, monkeypatch):
++    """image：OCR=FAILED（无 ocr chunk），Caption=SUCCESS，Embedding=SUCCESS → 不能跳过 → 补 OCR。"""
++    db, vs, add_file = env
++    src = tmp_path / "img.png"
++    src.write_bytes(b"fake-image-consistent")
++    h = content_hash_xxh3(src)
++    fid = add_file(str(src), file_type="image", content_hash=h, status="AI_DONE")
++    # 仅 Caption 成功（OCR 缺失/失败）
++    _seed_ai(db, fid, [(SourceType.IMAGE_CAPTION.value, 0, "城市天际线", EmbeddingStatus.SUCCESS.value)])
++
++    from types import SimpleNamespace
++
++    class FakeCaption:
++        def caption(self, _p):
++            return SimpleNamespace(text="城市天际线", model="fake", confidence=0.9)
++
++    calls = {"ocr": 0}
++    monkeypatch.setattr(processor, "extract_exif", lambda _p: None)
++    monkeypatch.setattr(processor, "ocr_image",
++                        lambda _p: (calls.__setitem__("ocr", calls["ocr"] + 1),
++                                    SimpleNamespace(text="New York 2026", confidence=0.9))[1])
++    process_image_file(db, fid, str(src), embedder=FakeEmbedder(), vector_store=vs, caption_provider=FakeCaption())
++    assert calls["ocr"] == 1, "OCR 缺失/FAILED 不应因 hash 相同跳过 → 应重新 OCR"
++    with db.connect() as c:
++        rows = c.execute(
++            "SELECT source_type, embedding_status FROM chunks WHERE file_id=? ORDER BY source_type", (fid,)
++        ).fetchall()
++        by_type = {r["source_type"]: r["embedding_status"] for r in rows}
++        # 重新处理后：ocr + caption 均存在、embedding 全 SUCCESS、无重复
++        assert set(by_type) == {SourceType.OCR.value, SourceType.IMAGE_CAPTION.value}
++        assert all(v == EmbeddingStatus.SUCCESS.value for v in by_type.values())
++        assert len(rows) == 2  # 无 duplicate chunks
++
++
++# ================= D. Copy =================
++
++def test_d9_copy_same_hash_reuses(env, tmp_path, monkeypatch):
++    """复制：新 file_id 相同 hash → 复用 chunks/ocr（不重新提取）。"""
++    db, vs, add_file = env
++    src = tmp_path / "src.txt"
++    src.write_text("复制的内容", encoding="utf-8")
++    h = content_hash_xxh3(src)
++    src_id = add_file(str(src), content_hash=h)
++    _seed_ai(db, src_id, [(SourceType.DOC_CHUNK.value, 0, "复制的内容", EmbeddingStatus.SUCCESS.value)], ocr=None)
++    _seed_vector(vs, src_id, SourceType.DOC_CHUNK.value, 0)
++    copy = tmp_path / "copy.txt"
++    copy.write_text("复制的内容", encoding="utf-8")  # 相同内容
++    copy_id = add_file(str(copy))
++    calls = {"extract": 0}
++    orig = processor.extract_text
++    monkeypatch.setattr(processor, "extract_text", lambda path: (calls.__setitem__("extract", calls["extract"] + 1), orig(path))[1])
++    process_doc_file(db, copy_id, str(copy), vector_store=vs)
++    assert calls["extract"] == 0, "复用路径不应重新提取"
++    with db.connect() as c:
++        row = c.execute("SELECT chunk_text, embedding_status FROM chunks WHERE file_id=?", (copy_id,)).fetchone()
++        assert row["chunk_text"] == "复制的内容"
++        assert row["embedding_status"] == EmbeddingStatus.SUCCESS.value  # 向量复用（源 SUCCESS）
++        assert c.execute("SELECT content_hash FROM files WHERE id=?", (copy_id,)).fetchone()["content_hash"] == h
++
++
++def test_d10_new_point_id(env, tmp_path):
++    """复制：新 point_id（new logical_key），禁止复制旧 point_id。"""
++    db, vs, add_file = env
++    src = tmp_path / "s.txt"
++    src.write_text("向量复用内容", encoding="utf-8")
++    h = content_hash_xxh3(src)
++    src_id = add_file(str(src), content_hash=h)
++    _seed_ai(db, src_id, [(SourceType.DOC_CHUNK.value, 0, "向量复用内容", EmbeddingStatus.SUCCESS.value)])
++    _seed_vector(vs, src_id, SourceType.DOC_CHUNK.value, 0, vec=[0.5, 0.5, 0.5])
++    copy = tmp_path / "c.txt"
++    copy.write_text("向量复用内容", encoding="utf-8")
++    copy_id = add_file(str(copy))
++    process_doc_file(db, copy_id, str(copy), vector_store=vs)
++    old_pid = point_id(src_id, SourceType.DOC_CHUNK.value, 0)
++    new_pid = point_id(copy_id, SourceType.DOC_CHUNK.value, 0)
++    assert new_pid != old_pid
++    assert new_pid in vs.points and old_pid in vs.points  # 旧保留 + 新写入
++    assert vs.points[new_pid][0] == [0.5, 0.5, 0.5]  # 向量相等（未重新 embedding）
++
++
++def test_d11_vectors_equal(env, tmp_path):
++    """复制：新向量 == 旧向量（免 BGE inference 的直接证据）。"""
++    db, vs, add_file = env
++    src = tmp_path / "s2.txt"
++    src.write_text("向量相等", encoding="utf-8")
++    h = content_hash_xxh3(src)
++    src_id = add_file(str(src), content_hash=h)
++    _seed_ai(db, src_id, [(SourceType.DOC_CHUNK.value, 0, "向量相等", EmbeddingStatus.SUCCESS.value)])
++    _seed_vector(vs, src_id, SourceType.DOC_CHUNK.value, 0, vec=[0.9, 0.1, 0.4, 0.2])
++    copy = tmp_path / "c2.txt"
++    copy.write_text("向量相等", encoding="utf-8")
++    copy_id = add_file(str(copy))
++    process_doc_file(db, copy_id, str(copy), vector_store=vs)
++    assert vs.points[point_id(copy_id, SourceType.DOC_CHUNK.value, 0)][0] == [0.9, 0.1, 0.4, 0.2]
++
++
++def test_d12_text_chunks_reused(env, tmp_path):
++    """复制：chunks 文本 + seg + token_count 全部复用。"""
++    db, vs, add_file = env
++    src = tmp_path / "s3.txt"
++    src.write_text("多 chunk 文本" * 100, encoding="utf-8")
++    h = content_hash_xxh3(src)
++    src_id = add_file(str(src), content_hash=h)
++    _seed_ai(db, src_id, [
++        (SourceType.DOC_CHUNK.value, 0, "第一段", EmbeddingStatus.SUCCESS.value),
++        (SourceType.DOC_CHUNK.value, 1, "第二段", EmbeddingStatus.SUCCESS.value),
++    ])
++    _seed_vector(vs, src_id, SourceType.DOC_CHUNK.value, 0)
++    _seed_vector(vs, src_id, SourceType.DOC_CHUNK.value, 1)
++    copy = tmp_path / "c3.txt"
++    copy.write_text("多 chunk 文本" * 100, encoding="utf-8")
++    copy_id = add_file(str(copy))
++    process_doc_file(db, copy_id, str(copy), vector_store=vs)
++    with db.connect() as c:
++        rows = c.execute(
++            "SELECT chunk_index, chunk_text, chunk_text_seg, token_count, embedding_status FROM chunks WHERE file_id=? ORDER BY chunk_index",
++            (copy_id,),
++        ).fetchall()
++        assert [(r["chunk_index"], r["chunk_text"]) for r in rows] == [(0, "第一段"), (1, "第二段")]
++        assert all(r["chunk_text_seg"] and r["token_count"] == 1 for r in rows)
++        assert all(r["embedding_status"] == EmbeddingStatus.SUCCESS.value for r in rows)
++
++
++# ================= E. Cross path =================
++
++def test_e13_delete_and_recreate_same_content_reuses(env, tmp_path):
++    """关闭期 delete+create（同内容）：新 file_id 复用已删除源（is_deleted=1）的 AI 产物。"""
++    db, vs, add_file = env
++    old = tmp_path / "moved.txt"
++    old.write_text("跨路径内容", encoding="utf-8")
++    h = content_hash_xxh3(old)
++    old_id = add_file(str(old), content_hash=h)
++    _seed_ai(db, old_id, [(SourceType.DOC_CHUNK.value, 0, "跨路径内容", EmbeddingStatus.SUCCESS.value)])
++    with db.connect() as c:  # 关闭期删除（软删）
++        c.execute("UPDATE files SET is_deleted=1 WHERE id=?", (old_id,))
++        c.commit()
++    new = tmp_path / "new-location.txt"
++    new.write_text("跨路径内容", encoding="utf-8")
++    new_id = add_file(str(new))
++    process_doc_file(db, new_id, str(new), vector_store=vs)
++    with db.connect() as c:
++        assert c.execute("SELECT chunk_text FROM chunks WHERE file_id=?", (new_id,)).fetchone()["chunk_text"] == "跨路径内容"
++        assert c.execute("SELECT is_deleted FROM files WHERE id=?", (old_id,)).fetchone()["is_deleted"] == 1  # 旧保持删除
++
++
++def test_e14_different_content_no_reuse(env, tmp_path):
++    """delete+create 但内容不同 → 不复用（正常重新处理）。"""
++    db, vs, add_file = env
++    old = tmp_path / "d.txt"
++    old.write_text("旧内容", encoding="utf-8")
++    h = content_hash_xxh3(old)
++    old_id = add_file(str(old), content_hash=h)
++    _seed_ai(db, old_id, [(SourceType.DOC_CHUNK.value, 0, "旧内容", EmbeddingStatus.SUCCESS.value)])
++    with db.connect() as c:
++        c.execute("UPDATE files SET is_deleted=1 WHERE id=?", (old_id,))
++        c.commit()
++    new = tmp_path / "d2.txt"
++    new.write_text("完全不同的新内容", encoding="utf-8")
++    new_id = add_file(str(new))
++    process_doc_file(db, new_id, str(new), vector_store=vs)
++    with db.connect() as c:
++        row = c.execute("SELECT chunk_text FROM chunks WHERE file_id=?", (new_id,)).fetchone()
++        assert "完全不同的新内容" in row["chunk_text"]  # 新内容（非旧内容复用）
++
++
++# ================= F. Failure =================
++
++def test_f15_reuse_transaction_fails_old_data_valid(env, tmp_path, monkeypatch):
++    """复用事务失败 → 抛异常（task FAILED）；源文件 AI 产物完整保留。"""
++    db, vs, add_file = env
++    src = tmp_path / "s.txt"
++    src.write_text("事务失败测试", encoding="utf-8")
++    h = content_hash_xxh3(src)
++    src_id = add_file(str(src), content_hash=h)
++    _seed_ai(db, src_id, [(SourceType.DOC_CHUNK.value, 0, "事务失败测试", EmbeddingStatus.SUCCESS.value)])
++    copy = tmp_path / "c.txt"
++    copy.write_text("事务失败测试", encoding="utf-8")
++    copy_id = add_file(str(copy))
++
++    orig_execute = None
++    import sqlite3 as _sqlite3
++
++    class Boom:
++        def __init__(self, conn):
++            self._conn = conn
++            self.failed = False
++
++        def execute(self, *a, **k):
++            if "INSERT INTO chunks" in (a[0] if a else "") and not self.failed:
++                self.failed = True
++                raise _sqlite3.OperationalError("simulated tx failure")
++            return self._conn.execute(*a, **k)
++
++    # 注入失败：包装 Database.connect
++    orig_connect = db.connect
++
++    def failing_connect():
++        return Boom(orig_connect())
++
++    monkeypatch.setattr(db, "connect", failing_connect)
++    with pytest.raises(Exception):
++        process_doc_file(db, copy_id, str(copy), vector_store=vs)
++    # 源文件产物保留 + 新文件无半成品
++    with orig_connect() as c:
++        assert c.execute("SELECT count(*) n FROM chunks WHERE file_id=?", (src_id,)).fetchone()["n"] == 1
++        assert c.execute("SELECT count(*) n FROM chunks WHERE file_id=?", (copy_id,)).fetchone()["n"] == 0
++
++
++def test_f16_qdrant_upsert_fails_old_data_valid(env, tmp_path):
++    """Qdrant upsert 失败 → 抛异常（task FAILED）；无 SQLite 半成品；源文件不受影响。"""
++    db, vs, add_file = env
++    src = tmp_path / "s.txt"
++    src.write_text("向量失败", encoding="utf-8")
++    h = content_hash_xxh3(src)
++    src_id = add_file(str(src), content_hash=h)
++    _seed_ai(db, src_id, [(SourceType.DOC_CHUNK.value, 0, "向量失败", EmbeddingStatus.SUCCESS.value)])
++    _seed_vector(vs, src_id, SourceType.DOC_CHUNK.value, 0)
++    copy = tmp_path / "c.txt"
++    copy.write_text("向量失败", encoding="utf-8")
++    copy_id = add_file(str(copy))
++
++    class BoomVS(FakeVectorStore):
++        def upsert_points(self, points):
++            raise RuntimeError("qdrant down")
++
++    boom = BoomVS()
++    boom.points = dict(vs.points)  # 继承旧向量（upsert 时失败）
++    with pytest.raises(RuntimeError):
++        process_doc_file(db, copy_id, str(copy), vector_store=boom)
++    with db.connect() as c:
++        assert c.execute("SELECT count(*) n FROM chunks WHERE file_id=?", (copy_id,)).fetchone()["n"] == 0
++        assert c.execute("SELECT count(*) n FROM chunks WHERE file_id=?", (src_id,)).fetchone()["n"] == 1
++        assert c.execute("SELECT status FROM files WHERE id=?", (src_id,)).fetchone()["status"] == FileStatus.AI_DONE.value
++
++
++def test_f17_old_data_remains_valid(env, tmp_path):
++    """复用失败后：源文件 FTS/搜索能力不受影响（chunks 完整 + embedding 完整）。"""
++    db, vs, add_file = env
++    src = tmp_path / "keep.txt"
++    src.write_text("保留内容", encoding="utf-8")
++    h = content_hash_xxh3(src)
++    src_id = add_file(str(src), content_hash=h)
++    _seed_ai(db, src_id, [(SourceType.DOC_CHUNK.value, 0, "保留内容", EmbeddingStatus.SUCCESS.value)])
++    _seed_vector(vs, src_id, SourceType.DOC_CHUNK.value, 0)
++    # 模拟一次失败的复用（源不存在向量 → 读取失败）
++    copy = tmp_path / "c.txt"
++    copy.write_text("保留内容", encoding="utf-8")
++    copy_id = add_file(str(copy))
++    empty_vs = FakeVectorStore()  # 无旧向量 → 复用仅文本，embedding PENDING
++    process_doc_file(db, copy_id, str(copy), vector_store=empty_vs)
++    with db.connect() as c:
++        row = c.execute("SELECT embedding_status FROM chunks WHERE file_id=?", (copy_id,)).fetchone()
++        assert row["embedding_status"] == EmbeddingStatus.PENDING.value  # 文本复用，向量待补（不误标 SUCCESS）
++        assert c.execute("SELECT count(*) n FROM chunks WHERE file_id=?", (src_id,)).fetchone()["n"] == 1
++
++
++# ================= G. Model compatibility =================
++
++def test_g18_incompatible_embedding_no_reuse(env, tmp_path):
++    """embedding 兼容（MVP 单模型）：源 embedding_status 非 SUCCESS → 新文件不复制向量（PENDING）。"""
++    db, vs, add_file = env
++    src = tmp_path / "s.txt"
++    src.write_text("模型兼容", encoding="utf-8")
++    h = content_hash_xxh3(src)
++    src_id = add_file(str(src), content_hash=h)
++    _seed_ai(db, src_id, [(SourceType.DOC_CHUNK.value, 0, "模型兼容", EmbeddingStatus.FAILED.value)])  # 源向量失败/旧模型
++    copy = tmp_path / "c.txt"
++    copy.write_text("模型兼容", encoding="utf-8")
++    copy_id = add_file(str(copy))
++    process_doc_file(db, copy_id, str(copy), vector_store=vs)
++    with db.connect() as c:
++        row = c.execute("SELECT embedding_status FROM chunks WHERE file_id=?", (copy_id,)).fetchone()
++        assert row["embedding_status"] == EmbeddingStatus.PENDING.value  # 只复用文本，不误复用向量
++    assert vs.upserted == []  # 未复制任何向量
++
++
++# ================= image 路径（OCR/Caption 复用） =================
++
++def test_image_copy_reuses_ocr_caption(env, tmp_path, monkeypatch):
++    """image 复制：复用 ocr_text + chunks(ocr) + image_caption，不重新 OCR/Caption。"""
++    db, vs, add_file = env
++    src = tmp_path / "img.png"
++    src.write_bytes(b"fake-image-bytes-same")
++    h = content_hash_xxh3(src)
++    src_id = add_file(str(src), file_type="image", content_hash=h)
++    _seed_ai(db, src_id, [
++        (SourceType.OCR.value, 0, "New York 2026", EmbeddingStatus.SUCCESS.value),
++        (SourceType.IMAGE_CAPTION.value, 0, "城市天际线", EmbeddingStatus.SUCCESS.value),
++    ], ocr="New York 2026")
++    _seed_vector(vs, src_id, SourceType.OCR.value, 0)
++    _seed_vector(vs, src_id, SourceType.IMAGE_CAPTION.value, 0)
++    copy = tmp_path / "copy.png"
++    copy.write_bytes(b"fake-image-bytes-same")
++    copy_id = add_file(str(copy), file_type="image")
++
++    calls = {"ocr": 0, "caption": 0}
++    monkeypatch.setattr(processor, "ocr_image", lambda _p: (calls.__setitem__("ocr", calls["ocr"] + 1), None)[1])
++    monkeypatch.setattr(processor, "extract_exif", lambda _p: None)
++
++    class FakeCaption:
++        def caption(self, _p):
++            calls["caption"] += 1
++            return None
++
++    process_image_file(db, copy_id, str(copy), vector_store=vs, caption_provider=FakeCaption())
++    assert calls["ocr"] == 0 and calls["caption"] == 0, "复制路径不应重新 OCR/Caption"
++    with db.connect() as c:
++        rows = {
++            r["source_type"]: (r["chunk_text"], r["embedding_status"])
++            for r in c.execute("SELECT source_type, chunk_text, embedding_status FROM chunks WHERE file_id=?", (copy_id,)).fetchall()
++        }
++        assert rows[SourceType.OCR.value][0] == "New York 2026"
++        assert rows[SourceType.IMAGE_CAPTION.value][0] == "城市天际线"
++        assert rows[SourceType.OCR.value][1] == EmbeddingStatus.SUCCESS.value
++        ocr_row = c.execute("SELECT text FROM ocr_text WHERE file_id=?", (copy_id,)).fetchone()
++        assert ocr_row["text"] == "New York 2026"
++    assert sorted(vs.upserted) == sorted([
++        point_id(copy_id, SourceType.OCR.value, 0),
++        point_id(copy_id, SourceType.IMAGE_CAPTION.value, 0),
++    ])
+diff --git a/python/tests/test_watch.py b/python/tests/test_watch.py
+index cf2c4d7..c1739e6 100644
+--- a/python/tests/test_watch.py
++++ b/python/tests/test_watch.py
+@@ -114,14 +114,24 @@ def test_watch_rename_keeps_file_id(watch_env):
+ 
+ 
+ def test_watch_rename_conflict_rescans(watch_env):
+-    """目标 path 已存在：不覆盖、不删除目标记录；source 消失 → 删除（重新扫描语义）。"""
++    """目标 path 已存在（不同内容）：不覆盖、不删除目标记录；source 消失 → 删除（重新扫描语义）。
++
++    注：目标与源 stat 不同（不同 size）+ 目标有 AI 产物 → 真 conflict（P2.2 合并判定排除）。
++    """
+     db, svc, watch, root = watch_env
+     a = root / "a.txt"
+     b = root / "b.txt"
+     a.write_text("A", encoding="utf-8")
+-    b.write_text("B", encoding="utf-8")
++    b.write_text("B" * 8, encoding="utf-8")  # 与 a 不同 size（stat 不同 → 真 conflict）
+     assert _wait_until(lambda: len([r for r in _paths(db) if not r["is_deleted"]]) == 2)
+     b_fid = db.connect().execute("SELECT id FROM files WHERE filename='b.txt'").fetchone()["id"]
++    with db.connect() as c:  # b 为真实文件（有 AI 产物，防误合并）
++        c.execute(
++            "INSERT INTO chunks (file_id, source_type, chunk_index, chunk_text, chunk_text_seg) "
++            "VALUES (?, 'doc_chunk', 0, 'b', 'b')",
++            (b_fid,),
++        )
++        c.commit()
+ 
+     os.replace(a, b)  # 覆盖式重命名（Windows os.rename 会失败，用 os.replace）
+     # conflict：b 记录不得被覆盖删除；a 消失 → is_deleted=1

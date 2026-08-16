@@ -296,19 +296,19 @@ class IndexService:
                 if n_chunks > 0:
                     same_file = False
             if same_file:
-                # 假 conflict：dst 行是 rename 伴生 created 的同一文件 → 物理删除假记录（含 FTS），走正常 rename
+                # 假 conflict：dst 行是 rename 伴生 created 的同一文件（stat 相同 + 无 AI 产物）
+                # → 物理删除假记录（含 FTS；chunks/ocr/exif 由 FK CASCADE 级联，ai_tasks 一并清），走正常 rename
                 logger.info("rename merged (watchdog created artifact) src=%s dst=%s", src, dst)
                 conn = self._db.connect()
                 try:
                     conn.execute("BEGIN")
-                    conn.execute("DELETE FROM chunks WHERE file_id=?", (dst_row["id"],))
-                    conn.execute("DELETE FROM ocr_text WHERE file_id=?", (dst_row["id"],))
-                    conn.execute("DELETE FROM exif WHERE file_id=?", (dst_row["id"],))
-                    self._fts.delete(dst_row["id"], conn=conn)
+                    self._fts.delete(dst_row["id"], conn=conn)  # fts_files 无 FK，须显式删
+                    # ai_tasks 由 FK CASCADE 删除（防悬空任务）；chunks/ocr_text/exif 同由 cascade 处理
                     conn.execute("DELETE FROM files WHERE id=?", (dst_row["id"],))
                     conn.execute("COMMIT")
                 except Exception:
-                    conn.execute("ROLLBACK")
+                    if conn.in_transaction:
+                        conn.execute("ROLLBACK")
                     raise
                 finally:
                     conn.close()
